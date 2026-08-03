@@ -427,7 +427,7 @@ func printNodes(idx int) printerAction {
         if idx >= len(f.Nodes) {
             return nil
         }
-        return printNode(f.Nodes[idx], printNodes(idx+1))
+        return printNode(f.Nodes[idx], writeThen("\n", printNodes(idx+1)))
     }
 }
 ```
@@ -449,6 +449,28 @@ func printNode(n Node, next printerAction) printerAction {
     }
 }
 ```
+
+### Whatever Is Printed Must Reparse
+
+The printer's real contract is that `Print` then `Parse` gives back the same
+values. Two cases need care, and both have mutation-tested coverage:
+
+- **Floats.** `strconv.FormatFloat(v, 'g', -1, 64)` gives the shortest text
+  which round trips *as a float64*, but for an integral value it produces
+  `100`, which reparses as an `Int`. `formatFloat` appends `.0` when the result
+  carries no `.`, `e`, or `E`, so the node type survives too.
+- **Strings.** `quoteString` re-escapes `"` and `\` because the tokenizer would
+  otherwise read a different string, and the whitespace escapes plus any
+  remaining control character as `\uXXXX` so the output stays printable.
+
+Infinities and NaN have no S-expression syntax at all; writing them would
+produce text which reparses as a *symbol*, so the printer refuses with
+`NonFiniteFloatError` rather than emitting something which silently changes
+meaning.
+
+When adding a node kind, check the round trip rather than only the expected
+text — a printer test asserting an exact string can pass while the output no
+longer parses back.
 
 ### Entry Point
 
