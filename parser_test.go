@@ -793,12 +793,14 @@ func TestParseComments(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name             string
-		src              string
-		expectedNodes    int
-		expectedFile     []*Comment
-		expectedListPath []int      // indexes to walk from file.Nodes to a list
-		expectedList     []*Comment // comments expected on that list
+		name          string
+		src           string
+		expectedNodes int
+		expectedFile  []*Comment
+		// expectedList, when set, is checked against the list parsed as the
+		// first top level node. Comments on more deeply nested lists are
+		// covered by TestParseCommentsAreScopedToTheirContainer.
+		expectedList []*Comment
 	}{
 		{
 			name:          "a file of only comments",
@@ -836,22 +838,20 @@ func TestParseComments(t *testing.T) {
 			},
 		},
 		{
-			name:             "comments inside a list stay on the list",
-			src:              "(; first\n a b ; last\n)",
-			expectedNodes:    1,
-			expectedFile:     nil,
-			expectedListPath: []int{0},
+			name:          "comments inside a list stay on the list",
+			src:           "(; first\n a b ; last\n)",
+			expectedNodes: 1,
+			expectedFile:  nil,
 			expectedList: []*Comment{
 				{Pos: Pos{Line: 1, Column: 2}, Text: "; first"},
 				{Pos: Pos{Line: 2, Column: 6}, Text: "; last"},
 			},
 		},
 		{
-			name:             "a comment before a dotted pair tail",
-			src:              "(a . ; before\n b)",
-			expectedNodes:    1,
-			expectedFile:     nil,
-			expectedListPath: []int{0},
+			name:          "a comment before a dotted pair tail",
+			src:           "(a . ; before\n b)",
+			expectedNodes: 1,
+			expectedFile:  nil,
 			expectedList: []*Comment{
 				{Pos: Pos{Line: 1, Column: 6}, Text: "; before"},
 			},
@@ -876,10 +876,9 @@ func TestParseComments(t *testing.T) {
 			require.Len(t, file.Nodes, tc.expectedNodes)
 			require.Equal(t, tc.expectedFile, file.Comments)
 
-			if tc.expectedListPath != nil {
-				node := file.Nodes[tc.expectedListPath[0]]
-				list, ok := node.(List)
-				require.Truef(t, ok, "expected a list, got %T", node)
+			if tc.expectedList != nil {
+				list, ok := file.Nodes[0].(List)
+				require.Truef(t, ok, "expected a list, got %T", file.Nodes[0])
 				require.Equal(t, tc.expectedList, list.Comments)
 			}
 		})
