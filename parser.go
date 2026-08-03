@@ -348,6 +348,11 @@ func (p *parser) unexpectedEndOfTokens(expected ...TokenType) UnexpectedEndOfTok
 
 type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 
+// nilLiteral is the spelling which denotes the empty value. It tokenizes as a
+// symbol, so the parser turns it into a [Nil] and the printer must refuse to
+// write a [Symbol] carrying it.
+const nilLiteral = "nil"
+
 // datumTokens are the token types which may begin a datum. The dot of a dotted
 // pair is absent because it separates two datums rather than starting one, and
 // a closing parenthesis only ever ends a list.
@@ -543,7 +548,7 @@ func (p *parser) parseDatum(tok Token, depth int, comments *[]*Comment) (Node, e
 		return p.parseQuote(tok, depth+1, comments)
 	case TokenSymbol:
 		// nil is spelled like a symbol but denotes the empty value.
-		if string(tok.Value) == "nil" {
+		if string(tok.Value) == nilLiteral {
 			return Nil{Pos: tok.Pos}, nil
 		}
 		return Symbol{Pos: tok.Pos, Value: string(tok.Value)}, nil

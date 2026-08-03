@@ -28,6 +28,29 @@ var ErrNilComment = errors.New("cannot print a nil comment")
 // a layout decision rather than a failure.
 var errNotInlineable = errors.New("node cannot be written inline")
 
+// InvalidSymbolError is the error returned by the printer when a [Symbol]
+// holds text which is not a symbol.
+//
+// Symbols are written verbatim because the format has no way to quote them, so
+// a value such as "123" or "a b" would read back as something other than the
+// symbol it came from.
+type InvalidSymbolError struct {
+	// Value comes first because the message leads with it, and because being
+	// field-identical to [Symbol] is a coincidence worth not relying on.
+	Value string
+	Pos   Pos
+}
+
+// Error implements the [error] interface.
+func (e InvalidSymbolError) Error() string {
+	return fmt.Sprintf(
+		"cannot print %q as a symbol at line %d, column %d",
+		e.Value,
+		e.Pos.Line,
+		e.Pos.Column,
+	)
+}
+
 // TailWithoutElementsError is the error returned by the printer when a [List]
 // carries a tail but has no elements.
 //
@@ -223,6 +246,10 @@ func (pr *printer) writeNode(n Node, indent, depth int) {
 	case Quote:
 		macro := quoteMacros[node.Kind]
 		pr.write(macro)
+		if node.Kind == QuoteKindUnquote && datumStartsWithAt(node.Datum) {
+			macro += " "
+			pr.write(" ")
+		}
 		pr.writeNode(node.Datum, indent+len(macro), depth+1)
 	default:
 		// An atom cannot be broken, so an over-long one simply runs on. Only a
@@ -308,6 +335,17 @@ func (pr *printer) writeWrappedList(list List, indent, depth int) {
 	pr.write(")")
 }
 
+// datumStartsWithAt reports whether n is written starting with '@'.
+//
+// Only a symbol can be, since '@' is not the leading character of any other
+// node's spelling. It matters because "," followed directly by such a datum
+// spells ",@", which reads back as unquote-splicing rather than as an unquote
+// of a symbol.
+func datumStartsWithAt(n Node) bool {
+	symbol, ok := n.(Symbol)
+	return ok && strings.HasPrefix(symbol.Value, "@")
+}
+
 // quoteMacros maps a quote kind back to the shorthand it was written with, so
 // that printing reproduces the sugar rather than expanding it.
 var quoteMacros = map[QuoteKind]string{
@@ -357,6 +395,9 @@ func writeInline(out *strings.Builder, n Node, depth int) error {
 
 	switch node := n.(type) {
 	case Symbol:
+		if !validSymbol(node.Value) {
+			return InvalidSymbolError{Value: node.Value, Pos: node.Pos}
+		}
 		out.WriteString(node.Value)
 	case String:
 		out.WriteString(quoteString(node.Value))
@@ -374,7 +415,7 @@ func writeInline(out *strings.Builder, n Node, depth int) error {
 			out.WriteString("#f")
 		}
 	case Nil:
-		out.WriteString("nil")
+		out.WriteString(nilLiteral)
 	case List:
 		if node.Tail != nil && len(node.Elements) == 0 {
 			return TailWithoutElementsError{Pos: node.Pos}
@@ -410,6 +451,10 @@ func writeInline(out *strings.Builder, n Node, depth int) error {
 			return UnsupportedNodeError{Node: n}
 		}
 		out.WriteString(macro)
+		if node.Kind == QuoteKindUnquote && datumStartsWithAt(node.Datum) {
+			// Keep "," and "@" apart so they are not read as one macro.
+			out.WriteByte(' ')
+		}
 		return writeInline(out, node.Datum, depth+1)
 	default:
 		// A nil node lands here too.
@@ -430,6 +475,32 @@ func formatFloat(v float64) string {
 		s += ".0"
 	}
 	return s
+}
+
+// validSymbol reports whether s would read back as the same symbol.
+//
+// The rules are the tokenizer's own: every character must be one a symbol may
+// contain, and the lexeme as a whole must classify as a symbol rather than as a
+// number or the dotted-pair dot. TestValidSymbolAgreesWithTheTokenizer keeps
+// this honest.
+func validSymbol(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	for _, r := range s {
+		if !isAtomRune(r) {
+			return false
+		}
+	}
+
+	if classifyAtom([]byte(s)) != TokenSymbol {
+		return false
+	}
+
+	// The tokenizer calls this a symbol, but the parser reads it as the empty
+	// value, so writing it would not give the symbol back.
+	return s != nilLiteral
 }
 
 // quoteString renders s as a string literal, escaping whatever must be escaped
