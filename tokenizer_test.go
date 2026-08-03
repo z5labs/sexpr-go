@@ -393,32 +393,37 @@ func TestTokenizerCopyUntil(t *testing.T) {
 		src         string
 		delim       []rune
 		expected    string
+		expectedPos Pos
 		expectedErr error
 	}{
 		{
-			name:     "copies everything before the delimiter",
-			src:      `abc*/rest`,
-			delim:    []rune{'*', '/'},
-			expected: "abc",
+			name:        "copies everything before the delimiter",
+			src:         `abc*/rest`,
+			delim:       []rune{'*', '/'},
+			expected:    "abc",
+			expectedPos: Pos{Line: 1, Column: 6},
 		},
 		{
-			name:     "copies nothing when the delimiter is immediate",
-			src:      `*/rest`,
-			delim:    []rune{'*', '/'},
-			expected: "",
+			name:        "copies nothing when the delimiter is immediate",
+			src:         `*/rest`,
+			delim:       []rune{'*', '/'},
+			expected:    "",
+			expectedPos: Pos{Line: 1, Column: 3},
 		},
 		{
-			name:        "reports unexpected EOF when the delimiter is absent",
+			name:        "flushes what it consumed when the delimiter is absent",
 			src:         `abc`,
 			delim:       []rune{'*', '/'},
-			expected:    "a",
+			expected:    "abc",
+			expectedPos: Pos{Line: 1, Column: 4},
 			expectedErr: io.ErrUnexpectedEOF,
 		},
 		{
-			name:     "tracks the delimiter across a newline",
-			src:      "a\nb*/rest",
-			delim:    []rune{'*', '/'},
-			expected: "a\nb",
+			name:        "tracks the delimiter across a newline",
+			src:         "a\nb*/rest",
+			delim:       []rune{'*', '/'},
+			expected:    "a\nb",
+			expectedPos: Pos{Line: 2, Column: 4},
 		},
 	}
 
@@ -440,6 +445,9 @@ func TestTokenizerCopyUntil(t *testing.T) {
 				require.NoError(t, err)
 			}
 			require.Equal(t, tc.expected, dst.String())
+			// pos must still line up with the reader once copyUntil returns,
+			// otherwise every token after a block comment is reported early.
+			require.Equal(t, tc.expectedPos, tk.pos)
 		})
 	}
 }

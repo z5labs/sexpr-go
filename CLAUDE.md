@@ -125,8 +125,12 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
                     case r == '"':
                         return tokenizeString(pos)
                     case isSymbolRune(r):
-                        return tokenizeSymbol(pos)
+                        // Rewind so the scanner sees the whole lexeme.
+                        err = t.backup(pos)
+                        return yieldErrorOr(err, tokenizeSymbol)
                     // ... more cases
+                    default:
+                        return yieldErrorOr(UnexpectedCharacterError{Pos: pos, R: r}, nil)
                     }
                 },
             )
@@ -136,6 +140,14 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
 ```
 
 Key pattern: capture position before reading, then dispatch to a specific tokenizer.
+
+Two dispatch shapes appear here, and the difference matters:
+
+- When the tokenizer only needs the character it already read, pass the captured
+  position to a closure — `tokenizeLParen(pos)`.
+- When the scanner needs to re-read the lexeme from its first rune, call
+  `t.backup(pos)` first and dispatch to a plain `tokenizerAction` which
+  re-captures `pos` itself — `tokenizeSymbol`.
 
 ### Closure Pattern for Capturing State
 
@@ -165,10 +177,14 @@ lexemes such as symbols, line comments, and numbers.
 
 `copyUntil(dst *bytes.Buffer, delim []rune) error` copies runes until the
 delimiter sequence is consumed, writing everything before it — use it for
-terminated constructs such as block comments.
+terminated constructs such as block comments. If the input ends before the
+delimiter arrives it flushes what it consumed and returns
+`io.ErrUnexpectedEOF`, so `dst` always holds the full lexeme either way.
 
 Both return `io.ErrUnexpectedEOF` when the input ends, which `yieldErrorOr`
-treats as clean termination.
+treats as clean termination. Both also keep `pos` in step with the reader for
+every rune they consume, including the runes which complete `delim` — token
+positions after a block comment depend on it.
 
 ### Naming Note
 

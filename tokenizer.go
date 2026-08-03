@@ -132,12 +132,21 @@ func (t *tokenizer) copyIf(buf *bytes.Buffer, cond func(rune) bool) error {
 }
 
 func (t *tokenizer) copyUntil(dst *bytes.Buffer, delim []rune) error {
+	// buf holds the trailing window of runes which may yet complete delim. Runes
+	// leave the window into dst once they can no longer be part of a match.
 	buf := make([]rune, 0, len(delim))
 
 	for {
 		r, size, err := t.buf.ReadRune()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				// The delimiter never arrived, so nothing still in the window can
+				// be part of a match. Flush it so dst holds everything consumed.
+				for _, pending := range buf {
+					if _, werr := dst.WriteRune(pending); werr != nil {
+						return werr
+					}
+				}
 				return io.ErrUnexpectedEOF
 			}
 			return err
@@ -155,14 +164,16 @@ func (t *tokenizer) copyUntil(dst *bytes.Buffer, delim []rune) error {
 
 		buf = append(buf, r)
 
-		if slices.Equal(buf, delim) {
-			return nil
-		}
-
+		// Account for every rune consumed, including those completing delim, so
+		// that pos still refers to the reader's offset once this returns.
 		t.pos.Column += size
 		if r == '\n' {
 			t.pos.Line++
 			t.pos.Column = 1
+		}
+
+		if slices.Equal(buf, delim) {
+			return nil
 		}
 	}
 }
