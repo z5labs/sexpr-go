@@ -284,8 +284,8 @@ func (p *parser) unexpectedEndOfTokens(expected ...TokenType) UnexpectedEndOfTok
 
 type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 
-// datumTokens are the token types which may begin a datum. Lists, dotted pairs,
-// and quote forms extend this in later stories.
+// datumTokens are the token types which may begin a datum. Dotted pairs and
+// quote forms extend this in later stories.
 var datumTokens = []TokenType{TokenLParen, TokenSymbol, TokenString, TokenNumber, TokenBool}
 
 func parseFile(p *parser, file *File) (parserAction[*File], error) {

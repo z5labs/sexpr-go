@@ -534,8 +534,9 @@ func TestMaxDepthExceededError(t *testing.T) {
 func TestParseRejectsTokensWithoutADatum(t *testing.T) {
 	t.Parallel()
 
-	// Lists, dotted pairs, and quote forms arrive in later stories, so for now
-	// their tokens have no datum to build.
+	// A closing parenthesis only ever appears while a list is being read, and
+	// dotted pairs and quote forms arrive in later stories, so none of these
+	// tokens can begin a datum yet.
 	testCases := []struct {
 		name string
 		src  string
