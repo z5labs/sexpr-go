@@ -353,8 +353,8 @@ func parseFile(p *parser, file *File) (parserAction[*File], error) {
 }
 
 // parseList reads the elements of a list up to its closing parenthesis. The
-// opening parenthesis at pos has already been consumed, and depth counts the
-// lists enclosing this one, including it.
+// opening parenthesis at pos has already been consumed, and depth is this
+// list's own nesting level as counted by [parser.parseDatum].
 func (p *parser) parseList(pos Pos, depth int) (Node, error) {
 	if depth > MaxDepth {
 		return nil, MaxDepthExceededError{Pos: pos, Depth: MaxDepth}
@@ -482,8 +482,13 @@ func (p *parser) parseQuote(tok Token, depth int) (Node, error) {
 	return Quote{Pos: tok.Pos, Kind: kind, Datum: datum}, nil
 }
 
-// parseDatum turns tok, and any tokens belonging with it, into a node. depth
-// counts the lists enclosing tok.
+// parseDatum turns tok, and any tokens belonging with it, into a node.
+//
+// depth counts the enclosing constructs which parse by recursing: lists and
+// reader macros both do, so both add a level. A construct which reads a datum
+// without recursing, such as a dotted pair's tail, shares the level of whatever
+// holds it. The count exists to bound recursion, so the question for a new
+// construct is whether it recurses, not whether it looks nested.
 func (p *parser) parseDatum(tok Token, depth int) (Node, error) {
 	switch tok.Type {
 	case TokenLParen:
