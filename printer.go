@@ -21,6 +21,13 @@ import (
 // Width is counted in bytes, matching how [Pos] counts columns.
 const MaxLineWidth = 80
 
+// ErrNilComment is returned by [Print] when a container holds a nil [Comment].
+var ErrNilComment = errors.New("cannot print a nil comment")
+
+// errNotInlineable reports that a node cannot be written on one line, which is
+// a layout decision rather than a failure.
+var errNotInlineable = errors.New("node cannot be written inline")
+
 // TailWithoutElementsError is the error returned by the printer when a [List]
 // carries a tail but has no elements.
 //
@@ -124,17 +131,52 @@ func printFile(pr *printer, f *File) printerAction {
 		pr.fail(ErrNilFile)
 		return nil
 	}
-	return printNodes(0)
+	return printNodes(0, 0)
 }
 
 // printNodes writes each top level datum on its own line.
-func printNodes(idx int) printerAction {
+// printNodes writes each top level datum on its own line, with the file's
+// comments emitted in position order among them.
+func printNodes(nodeIdx, commentIdx int) printerAction {
 	return func(pr *printer, f *File) printerAction {
-		if idx >= len(f.Nodes) {
+		// A comment which sits before the next datum, or after the last one,
+		// goes out first.
+		if commentIdx < len(f.Comments) {
+			comment := f.Comments[commentIdx]
+			if comment == nil {
+				pr.fail(ErrNilComment)
+				return nil
+			}
+			if nodeIdx >= len(f.Nodes) || lessPos(comment.Pos, posOf(f.Nodes[nodeIdx])) {
+				pr.writeComment(comment)
+				return printNodes(nodeIdx, commentIdx+1)
+			}
+		}
+
+		if nodeIdx >= len(f.Nodes) {
 			return nil
 		}
-		return printNode(f.Nodes[idx], 0, writeThen("\n", printNodes(idx+1)))
+
+		return printNode(f.Nodes[nodeIdx], 0, writeThen("\n", printNodes(nodeIdx+1, commentIdx)))
 	}
+}
+
+// writeComment writes a comment's source text followed by a newline.
+//
+// The newline is what stops a line comment from swallowing whatever comes
+// after it; a block comment gets one too so that every comment occupies its
+// own line.
+func (pr *printer) writeComment(comment *Comment) {
+	pr.write(comment.Text)
+	pr.write("\n")
+}
+
+// lessPos reports whether a comes before b in the source.
+func lessPos(a, b Pos) bool {
+	if a.Line != b.Line {
+		return a.Line < b.Line
+	}
+	return a.Column < b.Column
 }
 
 // printNode writes a single node at the given indent and continues with the
@@ -164,12 +206,13 @@ func (pr *printer) writeNode(n Node, indent, depth int) {
 	}
 
 	line, err := renderInline(n, depth)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNotInlineable):
+		// Fall through to the breaking switch below.
+	case err != nil:
 		pr.fail(err)
 		return
-	}
-
-	if indent+len(line) <= MaxLineWidth {
+	case indent+len(line) <= MaxLineWidth:
 		pr.write(line)
 		return
 	}
@@ -183,7 +226,8 @@ func (pr *printer) writeNode(n Node, indent, depth int) {
 		pr.write(macro)
 		pr.writeNode(node.Datum, indent+len(macro), depth+1)
 	default:
-		// An atom cannot be broken, so an over-long one simply runs on.
+		// An atom cannot be broken, so an over-long one simply runs on. Only a
+		// list ever refuses to inline, so line is always valid here.
 		pr.write(line)
 	}
 }
@@ -197,20 +241,69 @@ func (pr *printer) writeWrappedList(list List, indent, depth int) {
 	inner := indent + 2
 	pad := "\n" + strings.Repeat(" ", inner)
 
+	comments := list.Comments
+	next := 0
+
+	// writeCommentsBefore emits, each on its own line, the comments which were
+	// written earlier in the source than pos.
+	writeCommentsBefore := func(pos Pos) bool {
+		wrote := false
+		for next < len(comments) {
+			comment := comments[next]
+			if comment == nil {
+				pr.fail(ErrNilComment)
+				return wrote
+			}
+			if !lessPos(comment.Pos, pos) {
+				break
+			}
+			pr.write(pad)
+			pr.write(comment.Text)
+			next++
+			wrote = true
+		}
+		return wrote
+	}
+
 	for i, element := range list.Elements {
-		if i == 0 {
+		precededByComment := writeCommentsBefore(posOf(element))
+
+		if i == 0 && !precededByComment {
 			// The head stays on the opening line, just after the parenthesis.
 			pr.writeNode(element, indent+1, depth+1)
 			continue
 		}
+
 		pr.write(pad)
 		pr.writeNode(element, inner, depth+1)
 	}
 
 	if list.Tail != nil {
+		writeCommentsBefore(posOf(list.Tail))
 		pr.write(pad)
 		pr.write(". ")
 		pr.writeNode(list.Tail, inner+2, depth+1)
+	}
+
+	// Whatever is left sat after the last datum.
+	trailing := false
+	for next < len(comments) {
+		comment := comments[next]
+		if comment == nil {
+			pr.fail(ErrNilComment)
+			return
+		}
+		pr.write(pad)
+		pr.write(comment.Text)
+		next++
+		trailing = true
+	}
+
+	if trailing {
+		// The closing parenthesis cannot share a line with a line comment, so
+		// it drops to its own line under the opening one.
+		pr.write("\n")
+		pr.write(strings.Repeat(" ", indent))
 	}
 
 	pr.write(")")
@@ -286,6 +379,11 @@ func writeInline(out *strings.Builder, n Node, depth int) error {
 	case List:
 		if node.Tail != nil && len(node.Elements) == 0 {
 			return TailWithoutElementsError{Pos: node.Pos}
+		}
+		if len(node.Comments) > 0 {
+			// A line comment would swallow the rest of the line, so a list with
+			// comments has to be broken across lines whatever its width.
+			return errNotInlineable
 		}
 
 		out.WriteByte('(')

@@ -467,6 +467,19 @@ Both `writeInline` and `writeNode` carry a depth and stop at `MaxDepth`. `Parse`
 cannot produce anything deeper, but a hand built AST can, and the recursion here
 would otherwise overflow the stack exactly as the parser's would.
 
+### Comments Force a Break
+
+A container's comments are merged with its datums by `Pos`, so ordering comes
+from the source rather than from a separate list appended at the end.
+
+The constraint which shapes the layout: a line comment runs to end of line, so
+writing one inside a single line list would comment out the rest of that list.
+`writeInline` therefore refuses a list carrying comments by returning
+`errNotInlineable`, a layout signal rather than a failure, and `writeNode`
+treats that as "must break". Because the refusal comes from `writeInline`, it
+propagates outward — an *outer* list cannot be inlined either if anything nested
+inside it carries a comment, which would otherwise drop those comments silently.
+
 ### Whatever Is Printed Must Reparse
 
 The printer's real contract is that `Print` then `Parse` gives back the same
