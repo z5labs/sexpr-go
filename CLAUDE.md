@@ -341,6 +341,17 @@ Because the tokenizer validates first, the malformed-input branches in these
 conversions are unreachable through `Parse`. They are still implemented and
 tested directly rather than left to panic.
 
+### Recursion Is Bounded
+
+Lists parse by recursive descent, so nesting costs stack. `parseDatum` and
+`parseList` thread a `depth` through, and `parseList` refuses to go past
+`MaxDepth`, returning `MaxDepthExceededError` instead. Any future construct
+which can contain a datum — dotted pairs, quote forms — must pass its `depth`
+along rather than restarting the count, otherwise the bound stops holding.
+
+The limit is exported so callers can see it, and the tests parse at exactly
+`MaxDepth` to show the bound is reachable rather than merely theoretical.
+
 ### Comments Never Reach a Parse Action
 
 `parser.advance` drops `TokenComment` so that every parse action sees only

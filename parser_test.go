@@ -171,6 +171,106 @@ b`,
 			src:      `; nothing but a comment`,
 			expected: nil,
 		},
+		{
+			name: "an empty list",
+			src:  `()`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}},
+			},
+		},
+		{
+			name: "a list of one element",
+			src:  `(a)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+				}},
+			},
+		},
+		{
+			name: "a list of mixed atoms",
+			src:  `(a 1 "s" #t nil)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+					Int{Pos: Pos{Line: 1, Column: 4}, Value: 1},
+					String{Pos: Pos{Line: 1, Column: 6}, Value: "s"},
+					Bool{Pos: Pos{Line: 1, Column: 10}, Value: true},
+					Nil{Pos: Pos{Line: 1, Column: 13}},
+				}},
+			},
+		},
+		{
+			name: "nested lists",
+			src:  `(a (b c) d)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+					List{Pos: Pos{Line: 1, Column: 4}, Elements: []Node{
+						Symbol{Pos: Pos{Line: 1, Column: 5}, Value: "b"},
+						Symbol{Pos: Pos{Line: 1, Column: 7}, Value: "c"},
+					}},
+					Symbol{Pos: Pos{Line: 1, Column: 10}, Value: "d"},
+				}},
+			},
+		},
+		{
+			name: "lists nested only in other lists",
+			src:  `((()))`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					List{Pos: Pos{Line: 1, Column: 2}, Elements: []Node{
+						List{Pos: Pos{Line: 1, Column: 3}},
+					}},
+				}},
+			},
+		},
+		{
+			name: "an empty list is not nil",
+			src:  `(() nil)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					List{Pos: Pos{Line: 1, Column: 2}},
+					Nil{Pos: Pos{Line: 1, Column: 5}},
+				}},
+			},
+		},
+		{
+			name: "several top level lists",
+			src:  `(a) (b)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+				}},
+				List{Pos: Pos{Line: 1, Column: 5}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 6}, Value: "b"},
+				}},
+			},
+		},
+		{
+			name: "a list spanning several lines",
+			src: `(add
+  1
+  2)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "add"},
+					Int{Pos: Pos{Line: 2, Column: 3}, Value: 1},
+					Int{Pos: Pos{Line: 3, Column: 3}, Value: 2},
+				}},
+			},
+		},
+		{
+			name: "comments inside a list are skipped",
+			src: `(a ; note
+ b)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+					Symbol{Pos: Pos{Line: 2, Column: 2}, Value: "b"},
+				}},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -280,6 +380,157 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
+func TestParseUnbalancedLists(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		src         string
+		expectedErr error
+	}{
+		{
+			name: "an unmatched opening parenthesis",
+			src:  `(`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: []TokenType{TokenRParen},
+				Pos:      Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "a list left open after an element",
+			src:  `(a`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: []TokenType{TokenRParen},
+				Pos:      Pos{Line: 1, Column: 2},
+			},
+		},
+		{
+			name: "an outer list left open",
+			src:  `(()`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: []TokenType{TokenRParen},
+				Pos:      Pos{Line: 1, Column: 3},
+			},
+		},
+		{
+			name: "a list left open across lines",
+			src: `(add
+  1`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: []TokenType{TokenRParen},
+				Pos:      Pos{Line: 2, Column: 3},
+			},
+		},
+		{
+			name: "a stray closing parenthesis",
+			src:  `)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a closing parenthesis after a datum",
+			src:  `a)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 2}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "one closing parenthesis too many",
+			src:  `(a))`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 4}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+
+			require.Equal(t, tc.expectedErr, err)
+			require.Nil(t, file)
+		})
+	}
+}
+
+// nest builds input nested depth levels deep around the given body.
+func nest(depth int, body string) string {
+	return strings.Repeat("(", depth) + body + strings.Repeat(")", depth)
+}
+
+func TestParseNestingDepth(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will parse input nested one thousand levels deep", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := Parse(strings.NewReader(nest(1_000, "x")))
+
+		require.NoError(t, err)
+		require.Len(t, file.Nodes, 1)
+
+		// Walk down to confirm the whole chain is there rather than trusting
+		// that the top level node alone looks right.
+		node := file.Nodes[0]
+		for i := range 1_000 {
+			list, ok := node.(List)
+			require.Truef(t, ok, "expected a list at depth %d, got %T", i, node)
+			require.Len(t, list.Elements, 1)
+			node = list.Elements[0]
+		}
+		require.Equal(t, Symbol{Pos: Pos{Line: 1, Column: 1001}, Value: "x"}, node)
+	})
+
+	t.Run("will parse input nested exactly to the limit", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := Parse(strings.NewReader(nest(MaxDepth, "x")))
+
+		require.NoError(t, err)
+		require.Len(t, file.Nodes, 1)
+	})
+
+	t.Run("will reject input nested one level beyond the limit", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := Parse(strings.NewReader(nest(MaxDepth+1, "x")))
+
+		require.Equal(t, MaxDepthExceededError{
+			Pos:   Pos{Line: 1, Column: MaxDepth + 1},
+			Depth: MaxDepth,
+		}, err)
+		require.Nil(t, file)
+	})
+
+	t.Run("will reject deep input without exhausting the stack", func(t *testing.T) {
+		t.Parallel()
+
+		// Far beyond the limit: the depth check must reject this long before
+		// recursion could overflow.
+		_, err := Parse(strings.NewReader(strings.Repeat("(", 1_000_000)))
+
+		require.IsType(t, MaxDepthExceededError{}, err)
+	})
+}
+
+func TestMaxDepthExceededError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will report the limit and position", func(t *testing.T) {
+		t.Parallel()
+
+		err := MaxDepthExceededError{Pos: Pos{Line: 2, Column: 9}, Depth: 10_000}
+
+		require.Equal(t, "maximum nesting depth of 10000 exceeded at line 2, column 9", err.Error())
+	})
+}
+
 func TestParseRejectsTokensWithoutADatum(t *testing.T) {
 	t.Parallel()
 
@@ -290,11 +541,6 @@ func TestParseRejectsTokensWithoutADatum(t *testing.T) {
 		src  string
 		tok  Token
 	}{
-		{
-			name: "an opening parenthesis",
-			src:  `(a)`,
-			tok:  Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
-		},
 		{
 			name: "a closing parenthesis",
 			src:  `)`,
