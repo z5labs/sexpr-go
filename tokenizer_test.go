@@ -34,14 +34,6 @@ func TestTokenizerErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "dotted pair dot is not yet a token",
-			src:  `(a . b)`,
-			expectedErr: UnexpectedCharacterError{
-				Pos: Pos{Line: 1, Column: 4},
-				R:   '.',
-			},
-		},
-		{
 			name: "unexpected character on a later line",
 			src: `(add
   a
@@ -52,35 +44,69 @@ func TestTokenizerErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "bare integer is not a symbol",
-			src:  `123`,
-			expectedErr: UnexpectedCharacterError{
-				Pos: Pos{Line: 1, Column: 1},
-				R:   '1',
-			},
-		},
-		{
-			name: "negative integer is not a symbol",
-			src:  `-1`,
-			expectedErr: UnexpectedCharacterError{
-				Pos: Pos{Line: 1, Column: 1},
-				R:   '-',
-			},
-		},
-		{
-			name: "explicitly positive integer is not a symbol",
-			src:  `(+42)`,
-			expectedErr: UnexpectedCharacterError{
-				Pos: Pos{Line: 1, Column: 2},
-				R:   '+',
-			},
-		},
-		{
-			name: "symbol may not begin with a digit",
+			name: "a symbol may not begin with a digit",
 			src:  `1abc`,
-			expectedErr: UnexpectedCharacterError{
-				Pos: Pos{Line: 1, Column: 1},
-				R:   '1',
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "1abc",
+			},
+		},
+		{
+			name: "a number must be followed by a delimiter",
+			src:  `123abc`,
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "123abc",
+			},
+		},
+		{
+			name: "two decimal points",
+			src:  `1.2.3`,
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "1.2.3",
+			},
+		},
+		{
+			name: "exponent without digits",
+			src:  `1e`,
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "1e",
+			},
+		},
+		{
+			name: "exponent with a sign but no digits",
+			src:  `1e+`,
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "1e+",
+			},
+		},
+		{
+			name: "repeated sign",
+			src:  `--1`,
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "--1",
+			},
+		},
+		{
+			name: "trailing decimal point without a fraction",
+			src:  `1.`,
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "1.",
+			},
+		},
+		{
+			name: "invalid number reports its own position",
+			src: `(add
+  1
+  2e)`,
+			expectedErr: InvalidNumberError{
+				Pos:   Pos{Line: 3, Column: 3},
+				Value: "2e",
 			},
 		},
 		{
@@ -585,6 +611,142 @@ line two"
 			},
 		},
 		{
+			name: "integers",
+			src:  `(0 42 -1 +42)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenNumber, Value: []byte("0")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenNumber, Value: []byte("42")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenNumber, Value: []byte("-1")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenNumber, Value: []byte("+42")},
+				{Pos: Pos{Line: 1, Column: 13}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "floating point numbers",
+			src:  `(1.5 -0.5 0.0)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenNumber, Value: []byte("1.5")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenNumber, Value: []byte("-0.5")},
+				{Pos: Pos{Line: 1, Column: 11}, Type: TokenNumber, Value: []byte("0.0")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "numbers with exponents",
+			src:  `(1e10 1.5e-3 1E+7 2e0)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenNumber, Value: []byte("1e10")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenNumber, Value: []byte("1.5e-3")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenNumber, Value: []byte("1E+7")},
+				{Pos: Pos{Line: 1, Column: 19}, Type: TokenNumber, Value: []byte("2e0")},
+				{Pos: Pos{Line: 1, Column: 22}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a leading decimal point begins a number",
+			src:  `(.5 -.5)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenNumber, Value: []byte(".5")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenNumber, Value: []byte("-.5")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a dot between datums is the dotted pair marker",
+			src:  `(a . b)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenDot, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("b")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a dot abutting a parenthesis is the dotted pair marker",
+			src:  `(a .(b))`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenDot, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("b")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenRParen, Value: []byte(")")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a dot at end of input is the dotted pair marker",
+			src:  `.`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenDot, Value: []byte(".")},
+			},
+		},
+		{
+			name: "a dot followed by a digit is part of a number",
+			src:  `(a .5)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenNumber, Value: []byte(".5")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a dot elsewhere is part of a symbol",
+			src:  `(a.b ... .foo x.)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a.b")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("...")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenSymbol, Value: []byte(".foo")},
+				{Pos: Pos{Line: 1, Column: 15}, Type: TokenSymbol, Value: []byte("x.")},
+				{Pos: Pos{Line: 1, Column: 17}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "signs and sign-led symbols are not numbers",
+			src:  `(- + -e10 ->x2 e10)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("-")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte("+")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("-e10")},
+				{Pos: Pos{Line: 1, Column: 11}, Type: TokenSymbol, Value: []byte("->x2")},
+				{Pos: Pos{Line: 1, Column: 16}, Type: TokenSymbol, Value: []byte("e10")},
+				{Pos: Pos{Line: 1, Column: 19}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a dotted pair of numbers",
+			src:  `(1 . 2)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenNumber, Value: []byte("1")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenDot, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenNumber, Value: []byte("2")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a number terminated by end of input",
+			src:  `42`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenNumber, Value: []byte("42")},
+			},
+		},
+		{
+			name: "a non-ASCII digit stays a symbol",
+			src:  `٣`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("٣")},
+			},
+		},
+		{
 			name: "parentheses immediately adjacent to symbols",
 			src:  `((a)b)`,
 			expected: []Token{
@@ -697,6 +859,68 @@ func TestUnterminatedCommentError(t *testing.T) {
 
 		require.Equal(t, "unterminated block comment at line 2, column 5", err.Error())
 	})
+}
+
+func TestInvalidNumberError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will report the lexeme and its position", func(t *testing.T) {
+		t.Parallel()
+
+		err := InvalidNumberError{Pos: Pos{Line: 3, Column: 8}, Value: "1.2.3"}
+
+		require.Equal(t, `invalid number literal "1.2.3" at line 3, column 8`, err.Error())
+	})
+}
+
+func TestValidNumber(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{
+		"0", "42", "-1", "+42", "007",
+		"1.5", "-0.5", "0.0", ".5", "-.5", "+.5",
+		"1e10", "1E10", "1e+10", "1e-10", "1.5e-3", "2e0", ".5e2",
+	}
+	for _, s := range valid {
+		t.Run("accepts "+s, func(t *testing.T) {
+			t.Parallel()
+			require.True(t, validNumber(s))
+		})
+	}
+
+	invalid := []string{
+		"", "-", "+", ".", "..", "--1", "++1", "-+1",
+		"1.", "1.2.3", "1e", "1e+", "1e-", "1ee1", "1e1.5",
+		"123abc", "1a", "abc", "e10", "0x10", "1_000",
+	}
+	for _, s := range invalid {
+		t.Run("rejects "+s, func(t *testing.T) {
+			t.Parallel()
+			require.False(t, validNumber(s))
+		})
+	}
+}
+
+func TestLooksNumeric(t *testing.T) {
+	t.Parallel()
+
+	// looksNumeric decides whether a malformed lexeme is reported as a bad
+	// number or accepted as a symbol, so both answers matter.
+	numeric := []string{"0", "42", "-1", "+42", ".5", "-.5", "--1", "1.2.3", "123abc", "1e"}
+	for _, s := range numeric {
+		t.Run("treats "+s+" as a number", func(t *testing.T) {
+			t.Parallel()
+			require.True(t, looksNumeric([]byte(s)))
+		})
+	}
+
+	symbolic := []string{"-", "+", "...", "->x2", "x2", "a.b", "-e10", "e10", ".foo", "abc"}
+	for _, s := range symbolic {
+		t.Run("treats "+s+" as a symbol", func(t *testing.T) {
+			t.Parallel()
+			require.False(t, looksNumeric([]byte(s)))
+		})
+	}
 }
 
 func TestUnterminatedStringError(t *testing.T) {

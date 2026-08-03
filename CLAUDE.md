@@ -124,10 +124,10 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
                         return tokenizeLineComment(pos)
                     case r == '"':
                         return tokenizeString(pos)
-                    case isSymbolRune(r):
+                    case isAtomRune(r):
                         // Rewind so the scanner sees the whole lexeme.
                         err = t.backup(pos)
-                        return yieldErrorOr(err, tokenizeSymbol)
+                        return yieldErrorOr(err, tokenizeAtom)
                     // ... more cases
                     default:
                         return yieldErrorOr(UnexpectedCharacterError{Pos: pos, R: r}, nil)
@@ -220,6 +220,32 @@ The tokenizer validates escape sequences but does not decode them. A
 excluded and every escape left as written — `"a\nb"` yields the five characters
 `a\nb`, not a string containing a newline. Decoding into `String.Value` is the
 parser's job, which keeps the token faithful to the source for the printer.
+
+### Atoms: Scan First, Classify After
+
+Symbols, numbers, and the dotted-pair dot share one character set, so they are
+not distinguished at dispatch time. `tokenizeAtom` scans the maximal run of
+`isAtomRune` characters and only then decides what the lexeme is:
+
+1. exactly `.` — `TokenDot`
+2. `looksNumeric` — `TokenNumber`, or `InvalidNumberError` if it is malformed
+3. otherwise — `TokenSymbol`
+
+Two properties fall out of scanning first rather than dispatching on the leading
+character:
+
+- `123abc` is one malformed number rather than a number followed by a symbol,
+  which is what makes "a number must be followed by a delimiter" hold without a
+  separate lookahead check.
+- A lone `.` is recognised as the dotted-pair marker simply because the run
+  stopped after it, so no lookahead is needed to tell `.` from `.5`, `...`, or
+  `a.b`.
+
+`looksNumeric` and `validNumber` are deliberately different tests. `validNumber`
+is the grammar. `looksNumeric` is the looser question "was this meant to be a
+number", and it is what decides whether a bad lexeme is an error or a symbol:
+`--1` is a malformed number, while `->x2` and `-e10` are ordinary symbols. Keep
+that distinction in mind before loosening either one.
 
 ### Naming Note
 

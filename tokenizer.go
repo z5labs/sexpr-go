@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 )
 
 // Pos represents the position of a token in the input.
@@ -47,6 +46,8 @@ const (
 	TokenSymbol                   // e.g. add, x, +, ->list
 	TokenComment                  // e.g. ; comment or #| comment |#
 	TokenString                   // e.g. "hello"
+	TokenNumber                   // e.g. 42, -0.5, 1.5e-3
+	TokenDot                      // "." separating the halves of a dotted pair
 )
 
 func (tt TokenType) String() string {
@@ -61,6 +62,10 @@ func (tt TokenType) String() string {
 		return "Comment"
 	case TokenString:
 		return "String"
+	case TokenNumber:
+		return "Number"
+	case TokenDot:
+		return "Dot"
 	default:
 		panic(fmt.Sprintf("unknown token type: %d", tt))
 	}
@@ -371,6 +376,17 @@ func (e UnterminatedStringError) Error() string {
 	return fmt.Sprintf("unterminated string literal at line %d, column %d", e.Pos.Line, e.Pos.Column)
 }
 
+// InvalidNumberError is the error returned by the tokenizer when a lexeme is meant to be a number but is malformed.
+type InvalidNumberError struct {
+	Pos   Pos
+	Value string
+}
+
+// Error implements the [error] interface.
+func (e InvalidNumberError) Error() string {
+	return fmt.Sprintf("invalid number literal %q at line %d, column %d", e.Value, e.Pos.Line, e.Pos.Column)
+}
+
 // InvalidEscapeError is the error returned by the tokenizer when a string literal contains an unrecognized escape sequence.
 type InvalidEscapeError struct {
 	Pos Pos
@@ -402,9 +418,9 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
 						return tokenizeHash(pos)
 					case r == '"':
 						return tokenizeString(pos)
-					case isSymbolRune(r):
+					case isAtomRune(r):
 						err = t.backup(pos)
-						return yieldErrorOr(err, tokenizeSymbol)
+						return yieldErrorOr(err, tokenizeAtom)
 					default:
 						return yieldErrorOr(UnexpectedCharacterError{Pos: pos, R: r}, nil)
 					}
@@ -414,25 +430,105 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
 	)
 }
 
-// symbolPunctuation are the punctuation characters which may appear in a symbol.
-const symbolPunctuation = `+-*/<>=!?:$%_&~^@`
+// atomPunctuation are the punctuation characters which may appear in an atom.
+// '.' is included because it may be part of a symbol such as "..." and part of
+// a number such as "1.5"; a lexeme consisting of nothing but '.' is the
+// dotted-pair marker instead.
+const atomPunctuation = `+-*/<>=!?:$%_&~^@.`
 
-// isSymbolRune reports whether r may appear in a symbol. Symbols are made up of
-// letters, digits, and the punctuation in symbolPunctuation. [unicode.IsLetter]
-// admits non-ASCII letters as well.
-func isSymbolRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(symbolPunctuation, r)
+// isAtomRune reports whether r may appear in an atom, that is a symbol, a
+// number, or the dotted-pair dot. [unicode.IsLetter] admits non-ASCII letters
+// as well.
+func isAtomRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(atomPunctuation, r)
 }
 
-// startsWithNumber reports whether the lexeme begins with a sequence that forms
-// a valid number, namely an optional sign followed by a digit. Such a lexeme is
-// not a symbol.
-func startsWithNumber(b []byte) bool {
-	r, size := utf8.DecodeRune(b)
-	if r == '+' || r == '-' {
-		r, _ = utf8.DecodeRune(b[size:])
+// isASCIIDigit reports whether b is one of '0' to '9'. Number syntax is
+// deliberately ASCII only, so a lexeme built from other digit runes stays a
+// symbol rather than becoming a malformed number.
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+// looksNumeric reports whether the lexeme is an attempt at a number: after any
+// leading signs it begins with a digit, or with a '.' followed by a digit.
+//
+// This is deliberately looser than [validNumber]. It is what separates "this
+// was meant to be a number and is malformed" from "this is a symbol", so that
+// "--1" is reported as a bad number while "->x2" stays a perfectly good symbol.
+func looksNumeric(b []byte) bool {
+	for len(b) > 0 && (b[0] == '+' || b[0] == '-') {
+		b = b[1:]
 	}
-	return unicode.IsDigit(r)
+	if len(b) > 0 && b[0] == '.' {
+		b = b[1:]
+	}
+	return len(b) > 0 && isASCIIDigit(b[0])
+}
+
+// validNumber reports whether the lexeme is a well formed number:
+//
+//	sign? ( digits ( '.' digits )? | '.' digits ) ( [eE] sign? digits )?
+func validNumber(s string) bool {
+	i := 0
+
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+
+	whole := 0
+	for i < len(s) && isASCIIDigit(s[i]) {
+		i++
+		whole++
+	}
+
+	fraction := 0
+	if i < len(s) && s[i] == '.' {
+		i++
+		for i < len(s) && isASCIIDigit(s[i]) {
+			i++
+			fraction++
+		}
+		// A decimal point must be followed by at least one digit, so "1." is
+		// not a number.
+		if fraction == 0 {
+			return false
+		}
+	}
+
+	if whole == 0 && fraction == 0 {
+		return false
+	}
+
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		exponent := 0
+		for i < len(s) && isASCIIDigit(s[i]) {
+			i++
+			exponent++
+		}
+		if exponent == 0 {
+			return false
+		}
+	}
+
+	// Anything left over means the lexeme ran past the number, as in "123abc".
+	return i == len(s)
+}
+
+// classifyAtom decides which kind of token a complete atom lexeme is.
+func classifyAtom(value []byte) TokenType {
+	switch {
+	case string(value) == ".":
+		return TokenDot
+	case looksNumeric(value):
+		return TokenNumber
+	default:
+		return TokenSymbol
+	}
 }
 
 func tokenizeLParen(pos Pos) tokenizerAction {
@@ -569,23 +665,25 @@ func tokenizeString(pos Pos) tokenizerAction {
 	}
 }
 
-func tokenizeSymbol(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+// tokenizeAtom scans a maximal run of atom characters and then decides what it
+// is. Scanning first is what makes "123abc" a single malformed number rather
+// than a number followed by a symbol, and what lets a lone "." be recognised as
+// the dotted-pair marker without lookahead.
+func tokenizeAtom(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 	pos := t.pos
 
-	var sym bytes.Buffer
-	err := t.copyIf(&sym, isSymbolRune)
+	var atom bytes.Buffer
+	err := t.copyIf(&atom, isAtomRune)
+	value := atom.Bytes()
 
-	// A symbol may not begin with a sequence that forms a valid number. Number
-	// literals are tokenized in a later story; until then such a lexeme is not
-	// a token this tokenizer produces.
+	// Only judge the lexeme once it is complete; a read failure is reported as is.
 	if err == nil || errors.Is(err, io.ErrUnexpectedEOF) {
-		if startsWithNumber(sym.Bytes()) {
-			r, _ := utf8.DecodeRune(sym.Bytes())
-			return yieldErrorOr(UnexpectedCharacterError{Pos: pos, R: r}, nil)
+		if looksNumeric(value) && !validNumber(string(value)) {
+			return yieldErrorOr(InvalidNumberError{Pos: pos, Value: string(value)}, nil)
 		}
 	}
 
-	tok := Token{Pos: pos, Type: TokenSymbol, Value: sym.Bytes()}
+	tok := Token{Pos: pos, Type: classifyAtom(value), Value: value}
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return yieldTokenThen(tok, nil)
 	}
