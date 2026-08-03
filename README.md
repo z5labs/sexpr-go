@@ -55,11 +55,11 @@ func main() {
 
 There are three entry points, layered on each other:
 
-| Function                                    | Purpose                                                             |
-|---------------------------------------------|---------------------------------------------------------------------|
-| `Tokenize(r io.Reader) iter.Seq2[Token, error]` | Scan a reader into tokens, keeping each lexeme's source text and position. |
-| `Parse(r io.Reader) (*File, error)`         | Build an AST, decoding string escapes and number literals.          |
-| `Print(w io.Writer, f *File) error`         | Write an AST back out as S-expression text.                         |
+| Function                                                    | Purpose                                                                    |
+|-------------------------------------------------------------|----------------------------------------------------------------------------|
+| `sexpr.Tokenize(r io.Reader) iter.Seq2[sexpr.Token, error]` | Scan a reader into tokens, keeping each lexeme's source text and position. |
+| `sexpr.Parse(r io.Reader) (*sexpr.File, error)`             | Build an AST, decoding string escapes and number literals.                 |
+| `sexpr.Print(w io.Writer, f *sexpr.File) error`             | Write an AST back out as S-expression text.                                |
 
 `Print` followed by `Parse` gives back the same values, so the two round trip.
 
@@ -69,15 +69,15 @@ Runnable versions of all of these live in [`example_test.go`](./example_test.go)
 
 A source is any number of top level datums. A datum is one of:
 
-| Kind    | Examples                       | Node type                    |
-|---------|--------------------------------|------------------------------|
-| symbol  | `add`, `x`, `+`, `->list`      | `Symbol`                     |
-| number  | `42`, `-7`, `0.5`, `-1.5e-3`   | `Int` or `Float`             |
-| string  | `"hello"`, `"a\nb"`            | `String`                     |
-| boolean | `#t`, `#true`, `#f`, `#false`  | `Bool`                       |
-| nil     | `nil`                          | `Nil`                        |
-| list    | `()`, `(add 1 2)`, `(a b . c)` | `List`                       |
-| quoted  | `'x`, `` `x ``, `,x`, `,@x`    | `Quote`                      |
+| Kind    | Examples                       | Node type                        |
+|---------|--------------------------------|----------------------------------|
+| symbol  | `add`, `x`, `+`, `->list`      | `sexpr.Symbol`                   |
+| number  | `42`, `-7`, `0.5`, `-1.5e-3`   | `sexpr.Int` or `sexpr.Float`     |
+| string  | `"hello"`, `"a\nb"`            | `sexpr.String`                   |
+| boolean | `#t`, `#true`, `#f`, `#false`  | `sexpr.Bool`                     |
+| nil     | `nil`                          | `sexpr.Nil`                      |
+| list    | `()`, `(add 1 2)`, `(a b . c)` | `sexpr.List`                     |
+| quoted  | `'x`, `` `x ``, `,x`, `,@x`    | `sexpr.Quote`                    |
 
 - **Symbols** are runs of letters, digits, and the punctuation `+-*/<>=!?:$%_&~^@.`
   which are neither a number nor the single character `.`. Letters include
