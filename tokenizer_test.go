@@ -37,10 +37,10 @@ func TestTokenizerErrors(t *testing.T) {
 			name: "unexpected character on a later line",
 			src: `(add
   a
-  ,b)`,
+  ]b)`,
 			expectedErr: UnexpectedCharacterError{
 				Pos: Pos{Line: 3, Column: 3},
-				R:   ',',
+				R:   ']',
 			},
 		},
 		{
@@ -876,6 +876,148 @@ line two"
 			},
 		},
 		{
+			name: "quote before a symbol",
+			src:  `'a`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("'")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+			},
+		},
+		{
+			name: "quasiquote before a symbol",
+			src:  "`a",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("`")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+			},
+		},
+		{
+			name: "unquote before a symbol",
+			src:  `,a`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte(",")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+			},
+		},
+		{
+			name: "unquote splicing is one token",
+			src:  `,@a`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte(",@")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenSymbol, Value: []byte("a")},
+			},
+		},
+		{
+			name: "unquote splicing followed by whitespace",
+			src:  `,@ a`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte(",@")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte("a")},
+			},
+		},
+		{
+			name: "the lookahead character is not swallowed",
+			src:  `,(a)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte(",")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a quasiquoted template with both unquote forms",
+			src:  "`(a ,b ,@c)",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("`")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenQuote, Value: []byte(",")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("b")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenQuote, Value: []byte(",@")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenSymbol, Value: []byte("c")},
+				{Pos: Pos{Line: 1, Column: 11}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "stacked quotes",
+			src:  `'',a`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("'")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenQuote, Value: []byte("'")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenQuote, Value: []byte(",")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte("a")},
+			},
+		},
+		{
+			name: "quote before a list",
+			src:  `'(1 2)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("'")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenNumber, Value: []byte("1")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenNumber, Value: []byte("2")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a trailing quote at end of input",
+			src:  `'`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("'")},
+			},
+		},
+		{
+			name: "a trailing quasiquote at end of input",
+			src:  "`",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("`")},
+			},
+		},
+		{
+			name: "a trailing unquote at end of input",
+			src:  `,`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte(",")},
+			},
+		},
+		{
+			name: "a trailing unquote splice at end of input",
+			src:  `,@`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte(",@")},
+			},
+		},
+		{
+			name: "reader macros across lines",
+			src: `'a
+  ,@b`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("'")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenQuote, Value: []byte(",@")},
+				{Pos: Pos{Line: 2, Column: 5}, Type: TokenSymbol, Value: []byte("b")},
+			},
+		},
+		{
+			name: "a bare at sign is still a symbol",
+			src:  `(@ ,@x)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("@")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenQuote, Value: []byte(",@")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("x")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "reader macro characters inside a string are inert",
+			src:  `"' \" , ,@"`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte(`' \" , ,@`)},
+			},
+		},
+		{
 			name: "parentheses immediately adjacent to symbols",
 			src:  `((a)b)`,
 			expected: []Token{
@@ -943,6 +1085,24 @@ func TestTokenType(t *testing.T) {
 		require.Equal(t, "LParen", TokenLParen.String())
 		require.Equal(t, "RParen", TokenRParen.String())
 		require.Equal(t, "Symbol", TokenSymbol.String())
+		require.Equal(t, "Comment", TokenComment.String())
+		require.Equal(t, "String", TokenString.String())
+		require.Equal(t, "Number", TokenNumber.String())
+		require.Equal(t, "Dot", TokenDot.String())
+		require.Equal(t, "Bool", TokenBool.String())
+		require.Equal(t, "Quote", TokenQuote.String())
+	})
+
+	t.Run("will name every declared token type", func(t *testing.T) {
+		t.Parallel()
+
+		// TokenQuote is the last declared type. Catches a type added to the
+		// const block without a matching String case, which would panic.
+		for tt := TokenLParen; tt <= TokenQuote; tt++ {
+			require.NotPanics(t, func() {
+				require.NotEmpty(t, tt.String())
+			})
+		}
 	})
 
 	t.Run("will panic on an unknown token type", func(t *testing.T) {
@@ -950,6 +1110,10 @@ func TestTokenType(t *testing.T) {
 
 		require.Panics(t, func() {
 			_ = TokenType(-1).String()
+		})
+
+		require.Panics(t, func() {
+			_ = (TokenQuote + 1).String()
 		})
 	})
 }

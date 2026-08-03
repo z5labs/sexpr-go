@@ -50,6 +50,7 @@ const (
 	TokenNumber                   // e.g. 42, -0.5, 1.5e-3
 	TokenDot                      // "." separating the halves of a dotted pair
 	TokenBool                     // #t, #true, #f, or #false
+	TokenQuote                    // a reader macro: ', `, , or ,@
 )
 
 func (tt TokenType) String() string {
@@ -70,6 +71,8 @@ func (tt TokenType) String() string {
 		return "Dot"
 	case TokenBool:
 		return "Bool"
+	case TokenQuote:
+		return "Quote"
 	default:
 		panic(fmt.Sprintf("unknown token type: %d", tt))
 	}
@@ -422,6 +425,12 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
 						return tokenizeHash(pos)
 					case r == '"':
 						return tokenizeString(pos)
+					case r == '\'':
+						return tokenizeQuote(pos, "'")
+					case r == '`':
+						return tokenizeQuote(pos, "`")
+					case r == ',':
+						return tokenizeUnquote(pos)
 					case isAtomRune(r):
 						err = t.backup(pos)
 						return yieldErrorOr(err, tokenizeAtom)
@@ -691,6 +700,43 @@ func tokenizeBlockComment(pos Pos) tokenizerAction {
 				skipWhitespace(tokenizeSexpr),
 			),
 		)
+	}
+}
+
+// tokenizeQuote yields a reader macro token carrying the macro's literal text.
+//
+// The tokenizer is deliberately permissive here: a macro with no datum after it
+// is still a complete token. Reporting the missing datum is the parser's job,
+// since only the parser knows what counts as one.
+func tokenizeQuote(pos Pos, macro string) tokenizerAction {
+	return yieldTokenThen(
+		Token{Pos: pos, Type: TokenQuote, Value: []byte(macro)},
+		tokenizeSexpr,
+	)
+}
+
+// tokenizeUnquote scans "," or ",@". The comma has already been consumed, so
+// this needs a single character of lookahead to tell the two apart, and must
+// put that character back when it turns out not to be '@'.
+func tokenizeUnquote(pos Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		lookaheadPos := t.pos
+		r, err := t.next()
+		if err != nil {
+			// A trailing comma is still a complete unquote token.
+			if errors.Is(err, io.EOF) {
+				return tokenizeQuote(pos, ",")
+			}
+			return yieldErrorOr(err, nil)
+		}
+
+		if r == '@' {
+			return tokenizeQuote(pos, ",@")
+		}
+
+		// Not part of the macro, so the next token gets to see it.
+		err = t.backup(lookaheadPos)
+		return yieldErrorOr(err, tokenizeQuote(pos, ","))
 	}
 }
 
