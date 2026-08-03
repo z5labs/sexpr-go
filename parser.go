@@ -86,6 +86,43 @@ type List struct {
 
 func (List) sexpr() {}
 
+// QuoteKind identifies which reader macro produced a [Quote].
+type QuoteKind int
+
+const (
+	QuoteKindQuote           QuoteKind = iota // '
+	QuoteKindQuasiquote                       // `
+	QuoteKindUnquote                          // ,
+	QuoteKindUnquoteSplicing                  // ,@
+)
+
+func (k QuoteKind) String() string {
+	switch k {
+	case QuoteKindQuote:
+		return "Quote"
+	case QuoteKindQuasiquote:
+		return "Quasiquote"
+	case QuoteKindUnquote:
+		return "Unquote"
+	case QuoteKindUnquoteSplicing:
+		return "UnquoteSplicing"
+	default:
+		panic(fmt.Sprintf("unknown quote kind: %d", k))
+	}
+}
+
+// Quote represents a datum written with one of the reader macro shorthands.
+//
+// The shorthand is kept rather than rewritten to (quote x), so that printing
+// reproduces what was written.
+type Quote struct {
+	Pos   Pos
+	Kind  QuoteKind
+	Datum Node
+}
+
+func (Quote) sexpr() {}
+
 // Comment represents a comment in the source.
 type Comment struct {
 	Pos  Pos
@@ -289,10 +326,10 @@ func (p *parser) unexpectedEndOfTokens(expected ...TokenType) UnexpectedEndOfTok
 
 type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 
-// datumTokens are the token types which may begin a datum. Quote forms extend
-// this in a later story; the dot of a dotted pair does not, since it separates
-// two datums rather than starting one.
-var datumTokens = []TokenType{TokenLParen, TokenSymbol, TokenString, TokenNumber, TokenBool}
+// datumTokens are the token types which may begin a datum. The dot of a dotted
+// pair is absent because it separates two datums rather than starting one, and
+// a closing parenthesis only ever ends a list.
+var datumTokens = []TokenType{TokenLParen, TokenQuote, TokenSymbol, TokenString, TokenNumber, TokenBool}
 
 func parseFile(p *parser, file *File) (parserAction[*File], error) {
 	tok, err, ok := p.read()
@@ -316,8 +353,8 @@ func parseFile(p *parser, file *File) (parserAction[*File], error) {
 }
 
 // parseList reads the elements of a list up to its closing parenthesis. The
-// opening parenthesis at pos has already been consumed, and depth counts the
-// lists enclosing this one, including it.
+// opening parenthesis at pos has already been consumed, and depth is this
+// list's own nesting level as counted by [parser.parseDatum].
 func (p *parser) parseList(pos Pos, depth int) (Node, error) {
 	if depth > MaxDepth {
 		return nil, MaxDepthExceededError{Pos: pos, Depth: MaxDepth}
@@ -401,12 +438,63 @@ func (p *parser) parseTail(depth int) (Node, error) {
 	return tail, nil
 }
 
-// parseDatum turns tok, and any tokens belonging with it, into a node. depth
-// counts the lists enclosing tok.
+// quoteKinds maps a reader macro's literal text to its kind.
+var quoteKinds = map[string]QuoteKind{
+	"'":  QuoteKindQuote,
+	"`":  QuoteKindQuasiquote,
+	",":  QuoteKindUnquote,
+	",@": QuoteKindUnquoteSplicing,
+}
+
+// parseQuote reads the datum a reader macro applies to. The macro token has
+// already been read.
+//
+// Quotes count against depth even though they do not look like nesting: a run
+// of them recurses just as a run of open parentheses does, so a long enough one
+// would otherwise exhaust the stack.
+func (p *parser) parseQuote(tok Token, depth int) (Node, error) {
+	if depth > MaxDepth {
+		return nil, MaxDepthExceededError{Pos: tok.Pos, Depth: MaxDepth}
+	}
+
+	// The tokenizer only emits the four accepted macros, so this is defensive.
+	kind, ok := quoteKinds[string(tok.Value)]
+	if !ok {
+		return nil, UnexpectedTokenError{Expected: datumTokens, Actual: tok}
+	}
+
+	next, err, ok := p.read()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		// The macro was written with nothing for it to apply to.
+		return nil, p.unexpectedEndOfTokens(datumTokens...)
+	}
+
+	// A closing parenthesis here is reported by parseDatum as the unexpected
+	// token it is.
+	datum, err := p.parseDatum(next, depth)
+	if err != nil {
+		return nil, err
+	}
+
+	return Quote{Pos: tok.Pos, Kind: kind, Datum: datum}, nil
+}
+
+// parseDatum turns tok, and any tokens belonging with it, into a node.
+//
+// depth counts the enclosing constructs which parse by recursing: lists and
+// reader macros both do, so both add a level. A construct which reads a datum
+// without recursing, such as a dotted pair's tail, shares the level of whatever
+// holds it. The count exists to bound recursion, so the question for a new
+// construct is whether it recurses, not whether it looks nested.
 func (p *parser) parseDatum(tok Token, depth int) (Node, error) {
 	switch tok.Type {
 	case TokenLParen:
 		return p.parseList(tok.Pos, depth+1)
+	case TokenQuote:
+		return p.parseQuote(tok, depth+1)
 	case TokenSymbol:
 		// nil is spelled like a symbol but denotes the empty value.
 		if string(tok.Value) == "nil" {

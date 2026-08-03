@@ -372,6 +372,143 @@ b`,
 				},
 			},
 		},
+		{
+			name: "a quoted symbol",
+			src:  `'x`,
+			expected: []Node{
+				Quote{
+					Pos:   Pos{Line: 1, Column: 1},
+					Kind:  QuoteKindQuote,
+					Datum: Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "x"},
+				},
+			},
+		},
+		{
+			name: "a quasiquoted symbol",
+			src:  "`x",
+			expected: []Node{
+				Quote{
+					Pos:   Pos{Line: 1, Column: 1},
+					Kind:  QuoteKindQuasiquote,
+					Datum: Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "x"},
+				},
+			},
+		},
+		{
+			name: "an unquoted symbol",
+			src:  `,x`,
+			expected: []Node{
+				Quote{
+					Pos:   Pos{Line: 1, Column: 1},
+					Kind:  QuoteKindUnquote,
+					Datum: Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "x"},
+				},
+			},
+		},
+		{
+			name: "an unquote splicing form",
+			src:  `,@x`,
+			expected: []Node{
+				Quote{
+					Pos:   Pos{Line: 1, Column: 1},
+					Kind:  QuoteKindUnquoteSplicing,
+					Datum: Symbol{Pos: Pos{Line: 1, Column: 3}, Value: "x"},
+				},
+			},
+		},
+		{
+			name: "stacked quotes",
+			src:  `''x`,
+			expected: []Node{
+				Quote{
+					Pos:  Pos{Line: 1, Column: 1},
+					Kind: QuoteKindQuote,
+					Datum: Quote{
+						Pos:   Pos{Line: 1, Column: 2},
+						Kind:  QuoteKindQuote,
+						Datum: Symbol{Pos: Pos{Line: 1, Column: 3}, Value: "x"},
+					},
+				},
+			},
+		},
+		{
+			name: "mixed stacked macros",
+			src:  "`,@x",
+			expected: []Node{
+				Quote{
+					Pos:  Pos{Line: 1, Column: 1},
+					Kind: QuoteKindQuasiquote,
+					Datum: Quote{
+						Pos:   Pos{Line: 1, Column: 2},
+						Kind:  QuoteKindUnquoteSplicing,
+						Datum: Symbol{Pos: Pos{Line: 1, Column: 4}, Value: "x"},
+					},
+				},
+			},
+		},
+		{
+			name: "a quoted list",
+			src:  `'(1 2)`,
+			expected: []Node{
+				Quote{
+					Pos:  Pos{Line: 1, Column: 1},
+					Kind: QuoteKindQuote,
+					Datum: List{Pos: Pos{Line: 1, Column: 2}, Elements: []Node{
+						Int{Pos: Pos{Line: 1, Column: 3}, Value: 1},
+						Int{Pos: Pos{Line: 1, Column: 5}, Value: 2},
+					}},
+				},
+			},
+		},
+		{
+			name: "a quasiquoted template with both unquote forms",
+			src:  "`(a ,b ,@c)",
+			expected: []Node{
+				Quote{
+					Pos:  Pos{Line: 1, Column: 1},
+					Kind: QuoteKindQuasiquote,
+					Datum: List{Pos: Pos{Line: 1, Column: 2}, Elements: []Node{
+						Symbol{Pos: Pos{Line: 1, Column: 3}, Value: "a"},
+						Quote{
+							Pos:   Pos{Line: 1, Column: 5},
+							Kind:  QuoteKindUnquote,
+							Datum: Symbol{Pos: Pos{Line: 1, Column: 6}, Value: "b"},
+						},
+						Quote{
+							Pos:   Pos{Line: 1, Column: 8},
+							Kind:  QuoteKindUnquoteSplicing,
+							Datum: Symbol{Pos: Pos{Line: 1, Column: 10}, Value: "c"},
+						},
+					}},
+				},
+			},
+		},
+		{
+			name: "a quoted datum as a dotted pair tail",
+			src:  `(a . 'b)`,
+			expected: []Node{
+				List{
+					Pos:      Pos{Line: 1, Column: 1},
+					Elements: []Node{Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"}},
+					Tail: Quote{
+						Pos:   Pos{Line: 1, Column: 6},
+						Kind:  QuoteKindQuote,
+						Datum: Symbol{Pos: Pos{Line: 1, Column: 7}, Value: "b"},
+					},
+				},
+			},
+		},
+		{
+			name: "a quoted empty list",
+			src:  `'()`,
+			expected: []Node{
+				Quote{
+					Pos:   Pos{Line: 1, Column: 1},
+					Kind:  QuoteKindQuote,
+					Datum: List{Pos: Pos{Line: 1, Column: 2}},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -646,6 +783,151 @@ func TestParseMalformedDottedPairs(t *testing.T) {
 	}
 }
 
+func TestParseMalformedQuoteForms(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		src         string
+		expectedErr error
+	}{
+		{
+			name: "a quote with nothing after it",
+			src:  `'`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: datumTokens,
+				Pos:      Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "a quasiquote with nothing after it",
+			src:  "`",
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: datumTokens,
+				Pos:      Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "an unquote splice with nothing after it",
+			src:  `,@`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: datumTokens,
+				Pos:      Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "stacked quotes with nothing after them",
+			src:  `''`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: datumTokens,
+				Pos:      Pos{Line: 1, Column: 2},
+			},
+		},
+		{
+			name: "a quote immediately before a closing parenthesis",
+			src:  `(')`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a quote before the close of a longer list",
+			src:  `(a ')`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 5}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a quote before a dot",
+			src:  `(a ' . b)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 6}, Type: TokenDot, Value: []byte(".")},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+
+			require.Equal(t, tc.expectedErr, err)
+			require.Nil(t, file)
+		})
+	}
+}
+
+func TestParseQuoteDepth(t *testing.T) {
+	t.Parallel()
+
+	// A run of quote macros recurses exactly as a run of open parentheses does,
+	// even though it does not look like nesting. Without counting quotes
+	// against the bound this overflows the stack and takes the process with it,
+	// so this test guards a crash rather than a wrong answer.
+	t.Run("will bound a long run of quote macros", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Parse(strings.NewReader(strings.Repeat("'", 1_000_000) + "x"))
+
+		require.IsType(t, MaxDepthExceededError{}, err)
+	})
+
+	t.Run("will accept a run of quotes up to the limit", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := Parse(strings.NewReader(strings.Repeat("'", MaxDepth) + "x"))
+
+		require.NoError(t, err)
+		require.Len(t, file.Nodes, 1)
+	})
+
+	t.Run("will reject a run of quotes one beyond the limit", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Parse(strings.NewReader(strings.Repeat("'", MaxDepth+1) + "x"))
+
+		require.IsType(t, MaxDepthExceededError{}, err)
+	})
+}
+
+func TestQuoteKind(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will name each kind", func(t *testing.T) {
+		t.Parallel()
+
+		require.Equal(t, "Quote", QuoteKindQuote.String())
+		require.Equal(t, "Quasiquote", QuoteKindQuasiquote.String())
+		require.Equal(t, "Unquote", QuoteKindUnquote.String())
+		require.Equal(t, "UnquoteSplicing", QuoteKindUnquoteSplicing.String())
+	})
+
+	t.Run("will name every declared kind", func(t *testing.T) {
+		t.Parallel()
+
+		for k := QuoteKindQuote; k <= QuoteKindUnquoteSplicing; k++ {
+			require.NotPanics(t, func() {
+				require.NotEmpty(t, k.String())
+			})
+		}
+	})
+
+	t.Run("will panic on an unknown kind", func(t *testing.T) {
+		t.Parallel()
+
+		require.Panics(t, func() {
+			_ = QuoteKind(-1).String()
+		})
+		require.Panics(t, func() {
+			_ = (QuoteKindUnquoteSplicing + 1).String()
+		})
+	})
+}
+
 func TestParseDottedPairDepth(t *testing.T) {
 	t.Parallel()
 
@@ -746,8 +1028,7 @@ func TestParseRejectsTokensWithoutADatum(t *testing.T) {
 	t.Parallel()
 
 	// A closing parenthesis and a dot only ever appear while a list is being
-	// read, so neither can begin a datum, and quote forms arrive in a later
-	// story.
+	// read, so neither can begin a datum. Every other token type now can.
 	testCases := []struct {
 		name string
 		src  string
@@ -762,11 +1043,6 @@ func TestParseRejectsTokensWithoutADatum(t *testing.T) {
 			name: "a dotted pair marker",
 			src:  `.`,
 			tok:  Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenDot, Value: []byte(".")},
-		},
-		{
-			name: "a reader macro",
-			src:  `'a`,
-			tok:  Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("'")},
 		},
 	}
 
@@ -986,6 +1262,8 @@ var (
 	_ Node = Float{}
 	_ Node = Bool{}
 	_ Node = Nil{}
+	_ Node = List{}
+	_ Node = Quote{}
 )
 
 func TestNumberError(t *testing.T) {
