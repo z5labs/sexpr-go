@@ -39,4 +39,29 @@
 //
 // An atom is never broken, so a string or symbol longer than [MaxLineWidth]
 // simply runs past it.
+//
+// # Comments
+//
+// Comments are written back in source order among the datums of whichever
+// container holds them, each on its own line:
+//
+//	; leading
+//	(add 1 2)
+//	; trailing
+//
+// A line comment is always followed by a newline, so it can never swallow the
+// code after it. A block comment is written exactly as it appeared, delimiters
+// included.
+//
+// Because of that, a list holding any comment is always broken across lines
+// even when it would otherwise fit, and a comment written before a list's first
+// element pushes that element off the opening line:
+//
+//	(
+//	  ; about a
+//	  a
+//	  b)
+//
+// A comment after the last element likewise moves the closing parenthesis onto
+// its own line.
 package sexpr

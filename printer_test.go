@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -354,6 +355,241 @@ func TestPrintWrappingRespectsTheWidth(t *testing.T) {
 		for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
 			require.LessOrEqualf(t, len(line), MaxLineWidth, "line over width: %q", line)
 		}
+	})
+}
+
+func TestPrintComments(t *testing.T) {
+	t.Parallel()
+
+	// Driven from source so that the positions which decide ordering are the
+	// real ones rather than something hand assigned.
+	testCases := []struct {
+		name     string
+		src      string
+		expected string
+	}{
+		{
+			name:     "a file of only line comments",
+			src:      "; one\n; two",
+			expected: "; one\n; two\n",
+		},
+		{
+			name:     "a file of only a block comment",
+			src:      "#| only |#",
+			expected: "#| only |#\n",
+		},
+		{
+			name:     "a comment before a datum",
+			src:      "; lead\na",
+			expected: "; lead\na\n",
+		},
+		{
+			name:     "a comment after a datum",
+			src:      "a ; trail",
+			expected: "a\n; trail\n",
+		},
+		{
+			name:     "comments on both sides of a datum",
+			src:      "; lead\na ; trail",
+			expected: "; lead\na\n; trail\n",
+		},
+		{
+			name:     "comments interleaved with several datums",
+			src:      "; f1\na ; f2\nb ; f3",
+			expected: "; f1\na\n; f2\nb\n; f3\n",
+		},
+		{
+			name:     "a block comment keeps its delimiters",
+			src:      "#| b |# a",
+			expected: "#| b |#\na\n",
+		},
+		{
+			name:     "both comment styles in one file",
+			src:      "; line\n#| block |#\na",
+			expected: "; line\n#| block |#\na\n",
+		},
+		{
+			name: "a comment inside a list",
+			src:  "(a ; note\n b)",
+			expected: "(a\n" +
+				"  ; note\n" +
+				"  b)\n",
+		},
+		{
+			name: "a comment before a list's first element",
+			src:  "(; first\n a b)",
+			expected: "(\n" +
+				"  ; first\n" +
+				"  a\n" +
+				"  b)\n",
+		},
+		{
+			name: "a comment after a list's last element",
+			src:  "(a b ; last\n)",
+			expected: "(a\n" +
+				"  b\n" +
+				"  ; last\n" +
+				")\n",
+		},
+		{
+			name: "a block comment inside a list",
+			src:  "(a #| mid |# b)",
+			expected: "(a\n" +
+				"  #| mid |#\n" +
+				"  b)\n",
+		},
+		{
+			name: "a comment before a dotted pair tail",
+			src:  "(a . ; before\n b)",
+			expected: "(a\n" +
+				"  ; before\n" +
+				"  . b)\n",
+		},
+		{
+			name: "comments on nested lists stay with their own list",
+			src:  "((a ; inner\n) ; outer\n)",
+			expected: "((a\n" +
+				"   ; inner\n" +
+				" )\n" +
+				"  ; outer\n" +
+				")\n",
+		},
+		{
+			name: "a short list with a comment is still broken",
+			src:  "(a ; c\n b)",
+			expected: "(a\n" +
+				"  ; c\n" +
+				"  b)\n",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+			require.NoError(t, err)
+
+			var buf bytes.Buffer
+			require.NoError(t, Print(&buf, file))
+			require.Equal(t, tc.expected, buf.String())
+		})
+	}
+}
+
+// countComments totals the comments held anywhere in a file.
+func countComments(f *File) int {
+	total := len(f.Comments)
+
+	var walk func([]Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			switch node := n.(type) {
+			case List:
+				total += len(node.Comments)
+				walk(node.Elements)
+				if node.Tail != nil {
+					walk([]Node{node.Tail})
+				}
+			case Quote:
+				walk([]Node{node.Datum})
+			}
+		}
+	}
+	walk(f.Nodes)
+
+	return total
+}
+
+func TestPrintCommentsSurviveAReparse(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		"; only",
+		"; lead\na ; trail",
+		"#| b |# a",
+		"(a ; note\n b)",
+		"(; first\n a b ; last\n)",
+		"((a ; inner\n) ; outer\n)",
+		"(a . ; before\n b)",
+		"; f1\na ; f2\nb ; f3",
+		"'(a ; in quoted\n b)",
+		"(a #| one |# b #| two |# c)",
+	}
+
+	for _, src := range sources {
+		t.Run(strconv.Quote(src), func(t *testing.T) {
+			t.Parallel()
+
+			first, err := Parse(strings.NewReader(src))
+			require.NoError(t, err)
+
+			var buf bytes.Buffer
+			require.NoError(t, Print(&buf, first))
+
+			second, err := Parse(strings.NewReader(buf.String()))
+			require.NoErrorf(t, err, "printed output does not reparse:\n%s", buf.String())
+
+			require.Equal(t, countComments(first), countComments(second), "comment count changed")
+			require.Equal(t, shapeOf(first.Nodes), shapeOf(second.Nodes), "datum tree changed")
+
+			// Text is preserved verbatim, delimiters included.
+			require.Equal(t, commentTexts(first), commentTexts(second))
+		})
+	}
+}
+
+// commentTexts collects every comment's text in the order it is stored.
+func commentTexts(f *File) []string {
+	var out []string
+	for _, c := range f.Comments {
+		out = append(out, c.Text)
+	}
+
+	var walk func([]Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			switch node := n.(type) {
+			case List:
+				for _, c := range node.Comments {
+					out = append(out, c.Text)
+				}
+				walk(node.Elements)
+				if node.Tail != nil {
+					walk([]Node{node.Tail})
+				}
+			case Quote:
+				walk([]Node{node.Datum})
+			}
+		}
+	}
+	walk(f.Nodes)
+
+	return out
+}
+
+func TestPrintCommentErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will reject a nil comment on a file", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Comments: []*Comment{nil}})
+
+		require.ErrorIs(t, err, ErrNilComment)
+	})
+
+	t.Run("will reject a nil comment on a list", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Nodes: []Node{List{
+			Elements: []Node{Symbol{Value: "a"}},
+			Comments: []*Comment{nil},
+		}}})
+
+		require.ErrorIs(t, err, ErrNilComment)
 	})
 }
 
