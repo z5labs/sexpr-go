@@ -575,6 +575,29 @@ func TestPrintErrors(t *testing.T) {
 		require.IsType(t, NonFiniteFloatError{}, err)
 	})
 
+	t.Run("will reject a list with a tail but no elements", func(t *testing.T) {
+		t.Parallel()
+
+		// "(. b)" is not readable syntax, so refusing beats emitting it.
+		bad := List{Pos: Pos{Line: 2, Column: 3}, Tail: Symbol{Value: "b"}}
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Nodes: []Node{bad}})
+
+		require.Equal(t, TailWithoutElementsError{Pos: Pos{Line: 2, Column: 3}}, err)
+	})
+
+	t.Run("will reject a dangling tail nested in a list", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Nodes: []Node{List{Elements: []Node{
+			List{Tail: Symbol{Value: "b"}},
+		}}}})
+
+		require.IsType(t, TailWithoutElementsError{}, err)
+	})
+
 	t.Run("will reject an AST nested past the depth limit", func(t *testing.T) {
 		t.Parallel()
 
@@ -616,6 +639,14 @@ func TestPrinterErrorMessages(t *testing.T) {
 		t.Parallel()
 
 		require.Equal(t, "cannot print a node of type sexpr.unknownNode", UnsupportedNodeError{Node: unknownNode{}}.Error())
+	})
+
+	t.Run("will describe a dangling tail", func(t *testing.T) {
+		t.Parallel()
+
+		err := TailWithoutElementsError{Pos: Pos{Line: 4, Column: 7}}
+
+		require.Equal(t, "cannot print a list with a tail but no elements at line 4, column 7", err.Error())
 	})
 
 	t.Run("will describe a non-finite float", func(t *testing.T) {

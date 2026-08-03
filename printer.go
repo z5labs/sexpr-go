@@ -21,6 +21,24 @@ import (
 // Width is counted in bytes, matching how [Pos] counts columns.
 const MaxLineWidth = 80
 
+// TailWithoutElementsError is the error returned by the printer when a [List]
+// carries a tail but has no elements.
+//
+// A dot separates two halves, so there is no S-expression for a tail with
+// nothing before it; writing "(. b)" would produce text the parser rejects.
+type TailWithoutElementsError struct {
+	Pos Pos
+}
+
+// Error implements the [error] interface.
+func (e TailWithoutElementsError) Error() string {
+	return fmt.Sprintf(
+		"cannot print a list with a tail but no elements at line %d, column %d",
+		e.Pos.Line,
+		e.Pos.Column,
+	)
+}
+
 // ErrNilFile is returned by [Print] when given a nil [File].
 var ErrNilFile = errors.New("cannot print a nil file")
 
@@ -266,6 +284,10 @@ func writeInline(out *strings.Builder, n Node, depth int) error {
 	case Nil:
 		out.WriteString("nil")
 	case List:
+		if node.Tail != nil && len(node.Elements) == 0 {
+			return TailWithoutElementsError{Pos: node.Pos}
+		}
+
 		out.WriteByte('(')
 		for i, element := range node.Elements {
 			if i > 0 {
