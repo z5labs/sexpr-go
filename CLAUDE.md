@@ -177,14 +177,41 @@ lexemes such as symbols, line comments, and numbers.
 
 `copyUntil(dst *bytes.Buffer, delim []rune) error` copies runes until the
 delimiter sequence is consumed, writing everything before it — use it for
-terminated constructs such as block comments. If the input ends before the
-delimiter arrives it flushes what it consumed and returns
-`io.ErrUnexpectedEOF`, so `dst` always holds the full lexeme either way.
+terminated constructs which cannot contain themselves, where the first
+delimiter always ends the construct. If the input ends before the delimiter
+arrives it flushes what it consumed and returns `io.ErrUnexpectedEOF`, so `dst`
+always holds the full lexeme either way.
 
-Both return `io.ErrUnexpectedEOF` when the input ends, which `yieldErrorOr`
-treats as clean termination. Both also keep `pos` in step with the reader for
-every rune they consume, including the runes which complete `delim` — token
-positions after a block comment depend on it.
+`copyNested(dst *bytes.Buffer, open, closing []rune) error` copies a construct
+whose delimiters nest, counting depth instead of stopping at the first close.
+It assumes one opening delimiter has already been consumed and stops once that
+one's matching close is. `copyUntil` cannot express this, which is why both
+exist — use `copyNested` for `#| ... |#` and anything else that may contain
+itself.
+
+All three return `io.ErrUnexpectedEOF` when the input ends, and all three keep
+`pos` in step with the reader for every rune they consume, including the runes
+which complete a delimiter — token positions after a block comment depend on it.
+
+`yieldErrorOr` treats `io.ErrUnexpectedEOF` as clean termination, so a construct
+where running out of input is genuinely an error must intercept it *before*
+reaching `yieldErrorOr` and substitute a real error:
+
+```go
+err := t.copyNested(&comment, blockCommentOpen, blockCommentClose)
+if errors.Is(err, io.ErrUnexpectedEOF) {
+    return yieldErrorOr(UnterminatedCommentError{Pos: pos}, nil)
+}
+```
+
+Conversely, a construct that may legitimately end at EOF — such as a `;`
+comment with no trailing newline — yields its token on that branch instead:
+
+```go
+if errors.Is(err, io.ErrUnexpectedEOF) {
+    return yieldTokenThen(tok, nil)
+}
+```
 
 ### Naming Note
 

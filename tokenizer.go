@@ -42,9 +42,10 @@ func (t Token) String() string {
 type TokenType int
 
 const (
-	TokenLParen TokenType = iota // "("
-	TokenRParen                  // ")"
-	TokenSymbol                  // e.g. add, x, +, ->list
+	TokenLParen  TokenType = iota // "("
+	TokenRParen                   // ")"
+	TokenSymbol                   // e.g. add, x, +, ->list
+	TokenComment                  // e.g. ; comment or #| comment |#
 )
 
 func (tt TokenType) String() string {
@@ -55,6 +56,8 @@ func (tt TokenType) String() string {
 		return "RParen"
 	case TokenSymbol:
 		return "Symbol"
+	case TokenComment:
+		return "Comment"
 	default:
 		panic(fmt.Sprintf("unknown token type: %d", tt))
 	}
@@ -178,6 +181,69 @@ func (t *tokenizer) copyUntil(dst *bytes.Buffer, delim []rune) error {
 	}
 }
 
+// endsWith reports whether window's trailing runes are exactly delim.
+func endsWith(window, delim []rune) bool {
+	if len(window) < len(delim) {
+		return false
+	}
+	return slices.Equal(window[len(window)-len(delim):], delim)
+}
+
+// copyNested copies a construct delimited by open and closing, assuming the
+// caller has already consumed one opening delimiter, and stops once that
+// opening delimiter's matching close is consumed. Nested open/closing pairs are
+// counted rather than terminating the copy, which is why [tokenizer.copyUntil]
+// cannot serve here. Everything read, including the final closing delimiter, is
+// written to dst.
+//
+// open and closing may differ in length. They must not be suffixes of one
+// another, since a match is decided on the trailing runes read so far.
+func (t *tokenizer) copyNested(dst *bytes.Buffer, open, closing []rune) error {
+	// window holds the trailing runes which may complete either delimiter, so it
+	// must be wide enough for the longer of the two. It is reset after a match so
+	// that a delimiter rune is never counted twice, letting runs like "#|#|" nest
+	// as two separate opens.
+	width := max(len(open), len(closing))
+	window := make([]rune, 0, width)
+
+	for depth := 1; ; {
+		r, size, err := t.buf.ReadRune()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+
+		if _, err := dst.WriteRune(r); err != nil {
+			return err
+		}
+
+		t.pos.Column += size
+		if r == '\n' {
+			t.pos.Line++
+			t.pos.Column = 1
+		}
+
+		window = append(window, r)
+		if len(window) > width {
+			window = window[len(window)-width:]
+		}
+
+		switch {
+		case endsWith(window, open):
+			depth++
+			window = window[:0]
+		case endsWith(window, closing):
+			depth--
+			window = window[:0]
+			if depth == 0 {
+				return nil
+			}
+		}
+	}
+}
+
 type tokenizerAction func(t *tokenizer, yield func(Token, error) bool) tokenizerAction
 
 func yieldErrorOr(err error, next tokenizerAction) tokenizerAction {
@@ -224,6 +290,16 @@ func (e UnexpectedCharacterError) Error() string {
 	return fmt.Sprintf("unexpected character '%c' at line %d, column %d", e.R, e.Pos.Line, e.Pos.Column)
 }
 
+// UnterminatedCommentError is the error returned by the tokenizer when a block comment is never closed.
+type UnterminatedCommentError struct {
+	Pos Pos
+}
+
+// Error implements the [error] interface.
+func (e UnterminatedCommentError) Error() string {
+	return fmt.Sprintf("unterminated block comment at line %d, column %d", e.Pos.Line, e.Pos.Column)
+}
+
 func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 	return skipWhitespace(
 		func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
@@ -238,6 +314,10 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
 						return tokenizeLParen(pos)
 					case r == ')':
 						return tokenizeRParen(pos)
+					case r == ';':
+						return tokenizeLineComment(pos)
+					case r == '#':
+						return tokenizeHash(pos)
 					case isSymbolRune(r):
 						err = t.backup(pos)
 						return yieldErrorOr(err, tokenizeSymbol)
@@ -283,6 +363,84 @@ func tokenizeRParen(pos Pos) tokenizerAction {
 		Token{Pos: pos, Type: TokenRParen, Value: []byte(")")},
 		tokenizeSexpr,
 	)
+}
+
+// blockCommentOpen and blockCommentClose delimit a nestable block comment.
+var (
+	blockCommentOpen  = []rune{'#', '|'}
+	blockCommentClose = []rune{'|', '#'}
+)
+
+// tokenizeHash dispatches on the character following a '#'. Only block comments
+// are recognised for now; the remaining hash forms land in a later story.
+func tokenizeHash(pos Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		r, err := t.next()
+		if err != nil {
+			// A trailing '#' is an incomplete dispatch rather than a clean end.
+			if errors.Is(err, io.EOF) {
+				return yieldErrorOr(UnexpectedCharacterError{Pos: pos, R: '#'}, nil)
+			}
+			return yieldErrorOr(err, nil)
+		}
+
+		if r == '|' {
+			return tokenizeBlockComment(pos)
+		}
+		return yieldErrorOr(UnexpectedCharacterError{Pos: pos, R: '#'}, nil)
+	}
+}
+
+// tokenizeLineComment scans a ';' comment through end of line. The ';' has
+// already been consumed and is included in the token's value.
+func tokenizeLineComment(pos Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		var comment bytes.Buffer
+		comment.WriteRune(';')
+
+		err := t.copyIf(&comment, func(r rune) bool {
+			return r != '\n'
+		})
+
+		tok := Token{Pos: pos, Type: TokenComment, Value: comment.Bytes()}
+
+		// A comment running to the end of input without a trailing newline is
+		// still a complete comment.
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			return yieldTokenThen(tok, nil)
+		}
+
+		return yieldErrorOr(
+			err,
+			yieldTokenThen(tok, skipWhitespace(tokenizeSexpr)),
+		)
+	}
+}
+
+// tokenizeBlockComment scans a nestable '#| ... |#' comment. The opening '#|'
+// has already been consumed and both delimiters are included in the token's
+// value.
+func tokenizeBlockComment(pos Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		var comment bytes.Buffer
+		comment.WriteString(string(blockCommentOpen))
+
+		err := t.copyNested(&comment, blockCommentOpen, blockCommentClose)
+
+		// Running out of input mid-comment is a real error rather than the clean
+		// termination yieldErrorOr would otherwise read io.ErrUnexpectedEOF as.
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			return yieldErrorOr(UnterminatedCommentError{Pos: pos}, nil)
+		}
+
+		return yieldErrorOr(
+			err,
+			yieldTokenThen(
+				Token{Pos: pos, Type: TokenComment, Value: comment.Bytes()},
+				skipWhitespace(tokenizeSexpr),
+			),
+		)
+	}
 }
 
 func tokenizeSymbol(t *tokenizer, yield func(Token, error) bool) tokenizerAction {

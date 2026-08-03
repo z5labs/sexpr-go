@@ -83,6 +83,51 @@ func TestTokenizerErrors(t *testing.T) {
 				R:   '1',
 			},
 		},
+		{
+			name: "unterminated block comment",
+			src:  `#| never closed`,
+			expectedErr: UnterminatedCommentError{
+				Pos: Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "unterminated nested block comment",
+			src:  `#| outer #| inner |#`,
+			expectedErr: UnterminatedCommentError{
+				Pos: Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "unterminated block comment reports the opening delimiter",
+			src: `(a)
+  #| dangling`,
+			expectedErr: UnterminatedCommentError{
+				Pos: Pos{Line: 2, Column: 3},
+			},
+		},
+		{
+			name: "block comment closed one level short",
+			src:  `#|#||#`,
+			expectedErr: UnterminatedCommentError{
+				Pos: Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "unknown hash dispatch",
+			src:  `#x`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 1, Column: 1},
+				R:   '#',
+			},
+		},
+		{
+			name: "trailing hash at end of input",
+			src:  `#`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 1, Column: 1},
+				R:   '#',
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -256,6 +301,149 @@ func TestTokenizer(t *testing.T) {
 			},
 		},
 		{
+			name: "a line comment running to end of input",
+			src:  `; hello`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("; hello")},
+			},
+		},
+		{
+			name: "a line comment terminated by a newline",
+			src: `; first
+(a)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("; first")},
+				{Pos: Pos{Line: 2, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 2, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a line comment trailing a form",
+			src:  `(a) ; done`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenComment, Value: []byte("; done")},
+			},
+		},
+		{
+			name: "an empty line comment",
+			src:  `;`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte(";")},
+			},
+		},
+		{
+			name: "repeated semicolons belong to the comment",
+			src:  `;;; heading`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte(";;; heading")},
+			},
+		},
+		{
+			name: "a block comment",
+			src:  `#| c |#`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#| c |#")},
+			},
+		},
+		{
+			name: "an empty block comment",
+			src:  `#||#`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#||#")},
+			},
+		},
+		{
+			name: "a nested block comment is one token",
+			src:  `#| a #| b |# c |#`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#| a #| b |# c |#")},
+			},
+		},
+		{
+			name: "a doubly nested block comment is one token",
+			src:  `#| a #| b #| c |# d |# e |#`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#| a #| b #| c |# d |# e |#")},
+			},
+		},
+		{
+			name: "adjacent nested block comments",
+			src:  `#|#||#|#`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#|#||#|#")},
+			},
+		},
+		{
+			name: "a block comment between forms",
+			src:  `(a #| c |# b)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenComment, Value: []byte("#| c |#")},
+				{Pos: Pos{Line: 1, Column: 12}, Type: TokenSymbol, Value: []byte("b")},
+				{Pos: Pos{Line: 1, Column: 13}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "positions survive a multi-line block comment",
+			src: `#| line one
+   line two |#
+(a)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#| line one\n   line two |#")},
+				{Pos: Pos{Line: 3, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 3, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 3, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "positions survive a multi-line nested block comment",
+			src: `#| a
+#| b
+|# c |#
+(x)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#| a\n#| b\n|# c |#")},
+				{Pos: Pos{Line: 4, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 4, Column: 2}, Type: TokenSymbol, Value: []byte("x")},
+				{Pos: Pos{Line: 4, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "both comment styles together",
+			src: `; one
+#| two |# (a)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("; one")},
+				{Pos: Pos{Line: 2, Column: 1}, Type: TokenComment, Value: []byte("#| two |#")},
+				{Pos: Pos{Line: 2, Column: 11}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 2, Column: 12}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 2, Column: 13}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a line comment inside a block comment is not a delimiter",
+			src:  `#| ; not a line comment |#`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("#| ; not a line comment |#")},
+			},
+		},
+		{
+			name: "a block comment opener inside a line comment is inert",
+			src: `; #| not nested
+(a)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("; #| not nested")},
+				{Pos: Pos{Line: 2, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 2, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
 			name: "parentheses immediately adjacent to symbols",
 			src:  `((a)b)`,
 			expected: []Token{
@@ -356,6 +544,135 @@ func TestUnexpectedCharacterError(t *testing.T) {
 
 		require.Equal(t, "unexpected character '#' at line 3, column 7", err.Error())
 	})
+}
+
+func TestUnterminatedCommentError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will report the position of the opening delimiter", func(t *testing.T) {
+		t.Parallel()
+
+		err := UnterminatedCommentError{Pos: Pos{Line: 2, Column: 5}}
+
+		require.Equal(t, "unterminated block comment at line 2, column 5", err.Error())
+	})
+}
+
+func TestTokenizerCopyNested(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		src         string
+		expected    string
+		expectedPos Pos
+		expectedErr error
+	}{
+		{
+			name:        "stops at the matching close",
+			src:         ` a |# rest`,
+			expected:    " a |#",
+			expectedPos: Pos{Line: 1, Column: 6},
+		},
+		{
+			name:        "counts a nested pair rather than closing early",
+			src:         ` #| b |# c |# rest`,
+			expected:    " #| b |# c |#",
+			expectedPos: Pos{Line: 1, Column: 14},
+		},
+		{
+			name:        "treats adjacent opens as separate levels",
+			src:         `#||#|# rest`,
+			expected:    "#||#|#",
+			expectedPos: Pos{Line: 1, Column: 7},
+		},
+		{
+			name:        "tracks lines across the construct",
+			src:         "a\nb |# rest",
+			expected:    "a\nb |#",
+			expectedPos: Pos{Line: 2, Column: 5},
+		},
+		{
+			name:        "reports unexpected EOF when never closed",
+			src:         ` a `,
+			expected:    " a ",
+			expectedPos: Pos{Line: 1, Column: 4},
+			expectedErr: io.ErrUnexpectedEOF,
+		},
+		{
+			name:        "reports unexpected EOF when closed one level short",
+			src:         ` #| b |# `,
+			expected:    " #| b |# ",
+			expectedPos: Pos{Line: 1, Column: 10},
+			expectedErr: io.ErrUnexpectedEOF,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tk := &tokenizer{
+				pos: Pos{Line: 1, Column: 1},
+				buf: bufio.NewReader(strings.NewReader(tc.src)),
+			}
+
+			var dst bytes.Buffer
+			err := tk.copyNested(&dst, blockCommentOpen, blockCommentClose)
+
+			if tc.expectedErr != nil {
+				require.ErrorIs(t, err, tc.expectedErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.expected, dst.String())
+			require.Equal(t, tc.expectedPos, tk.pos)
+		})
+	}
+}
+
+func TestTokenizerCopyNestedUnevenDelimiters(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		src      string
+		open     []rune
+		closing  []rune
+		expected string
+	}{
+		{
+			name:     "closing longer than open",
+			open:     []rune{'<'},
+			closing:  []rune{'-', '>'},
+			src:      `a <b-> c-> rest`,
+			expected: "a <b-> c->",
+		},
+		{
+			name:     "open longer than closing",
+			open:     []rune{'<', '-'},
+			closing:  []rune{'>'},
+			src:      `a <-b> c> rest`,
+			expected: "a <-b> c>",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tk := &tokenizer{
+				pos: Pos{Line: 1, Column: 1},
+				buf: bufio.NewReader(strings.NewReader(tc.src)),
+			}
+
+			var dst bytes.Buffer
+			err := tk.copyNested(&dst, tc.open, tc.closing)
+
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, dst.String())
+		})
+	}
 }
 
 // errReader fails every read with a non-EOF error.
