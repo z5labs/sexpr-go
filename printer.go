@@ -337,10 +337,10 @@ func (pr *printer) writeWrappedList(list List, indent, depth int) {
 
 // datumStartsWithAt reports whether n is written starting with '@'.
 //
-// Only a symbol can be: every other node begins with a digit, a sign, a quote,
-// a parenthesis, or '#'. It matters because "," followed directly by such a
-// datum spells ",@", which reads back as unquote-splicing rather than as an
-// unquote of a symbol.
+// Only a symbol can be, since '@' is not the leading character of any other
+// node's spelling. It matters because "," followed directly by such a datum
+// spells ",@", which reads back as unquote-splicing rather than as an unquote
+// of a symbol.
 func datumStartsWithAt(n Node) bool {
 	symbol, ok := n.(Symbol)
 	return ok && strings.HasPrefix(symbol.Value, "@")
@@ -415,7 +415,7 @@ func writeInline(out *strings.Builder, n Node, depth int) error {
 			out.WriteString("#f")
 		}
 	case Nil:
-		out.WriteString("nil")
+		out.WriteString(nilLiteral)
 	case List:
 		if node.Tail != nil && len(node.Elements) == 0 {
 			return TailWithoutElementsError{Pos: node.Pos}
