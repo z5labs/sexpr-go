@@ -93,6 +93,7 @@ func (List) sexpr() {}
 // QuoteKind identifies which reader macro produced a [Quote].
 type QuoteKind int
 
+// The reader macro shorthands a [Quote] may carry.
 const (
 	QuoteKindQuote           QuoteKind = iota // '
 	QuoteKindQuasiquote                       // `
@@ -100,6 +101,9 @@ const (
 	QuoteKindUnquoteSplicing                  // ,@
 )
 
+// String implements the [fmt.Stringer] interface. It panics on a QuoteKind
+// which is not one of the constants above, since that can only come from a
+// value this package never produced.
 func (k QuoteKind) String() string {
 	switch k {
 	case QuoteKindQuote:

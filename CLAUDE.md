@@ -27,7 +27,10 @@ Every `.go` file starts with this header, followed by a blank line:
 | `parser.go`    | `Node` and its implementations, `File`, `Parse`, parser actions |
 | `printer.go`   | `Print`, printer actions                              |
 
-Tests live beside their implementation as `*_test.go`.
+Tests live beside their implementation as `*_test.go`. The runnable examples
+live in `example_test.go`, which is the only test file in `package sexpr_test`
+rather than `package sexpr` — they are user-facing documentation, so they must
+compile against the exported API exactly as a caller would write it.
 
 ## State Machine Pattern
 
@@ -595,7 +598,7 @@ Test with an explicit `*File` input and an expected string output:
     name: "a list of symbols",
     input: &File{
         Nodes: []Node{
-            &List{
+            List{
                 Pos: Pos{Line: 1, Column: 1},
                 Elements: []Node{
                     Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "add"},
