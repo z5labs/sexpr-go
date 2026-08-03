@@ -92,17 +92,19 @@ silently does nothing — `requested_reviewers` stays empty. Use the GraphQL `bo
 
 ```
 PR_ID=$(gh pr view <pr> --json id --jq .id)
+BOT_ID=$(gh api '/users/copilot-pull-request-reviewer[bot]' --jq .node_id)
 gh api graphql -f query='
 mutation($pr:ID!, $bot:ID!) {
   requestReviews(input: {pullRequestId: $pr, botIds: [$bot], union: true}) {
     pullRequest { reviewRequests(first:10) { nodes {
       requestedReviewer { __typename ... on Bot { login } } } } }
   }
-}' -f pr="$PR_ID" -f bot="BOT_kgDOCnlnWA"
+}' -f pr="$PR_ID" -f bot="$BOT_ID"
 ```
 
-`BOT_kgDOCnlnWA` is the stable node ID of `copilot-pull-request-reviewer`. Confirm the
-response lists it under `reviewRequests` — an empty list means the request did not take.
+The bot ID is looked up by login rather than hard-coded. Confirm the response lists
+`copilot-pull-request-reviewer` under `reviewRequests` — an empty list means the request
+did not take.
 
 Then wait for the review to land. Run this with Bash `run_in_background` so you get one
 notification when it finishes — do not foreground `sleep`:
