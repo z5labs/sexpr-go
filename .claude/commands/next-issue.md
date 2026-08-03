@@ -86,20 +86,32 @@ gh pr checks <pr> --watch --fail-fast
 
 ## 7. Request Copilot review
 
-```
-gh api repos/z5labs/sexpr-go/pulls/<pr>/requested_reviewers \
-  -X POST -f 'reviewers[]=Copilot'
-```
-
-Then wait for the review to land. Use Monitor with a bounded poll — do not foreground
-`sleep`:
+Copilot is a **Bot**, not a User. The REST endpoint
+(`POST /pulls/<pr>/requested_reviewers` with `reviewers[]=Copilot`) returns 200 but
+silently does nothing — `requested_reviewers` stays empty. Use the GraphQL `botIds` field:
 
 ```
-for i in $(seq 1 20); do
-  n=$(gh api repos/z5labs/sexpr-go/pulls/<pr>/reviews \
-        --jq '[.[] | select(.user.login=="Copilot")] | length')
+PR_ID=$(gh pr view <pr> --json id --jq .id)
+gh api graphql -f query='
+mutation($pr:ID!, $bot:ID!) {
+  requestReviews(input: {pullRequestId: $pr, botIds: [$bot], union: true}) {
+    pullRequest { reviewRequests(first:10) { nodes {
+      requestedReviewer { __typename ... on Bot { login } } } } }
+  }
+}' -f pr="$PR_ID" -f bot="BOT_kgDOCnlnWA"
+```
+
+`BOT_kgDOCnlnWA` is the stable node ID of `copilot-pull-request-reviewer`. Confirm the
+response lists it under `reviewRequests` — an empty list means the request did not take.
+
+Then wait for the review to land. Run this with Bash `run_in_background` so you get one
+notification when it finishes — do not foreground `sleep`:
+
+```
+for i in $(seq 1 40); do
+  n=$(gh api repos/z5labs/sexpr-go/pulls/<pr>/reviews --jq 'length' 2>/dev/null || echo 0)
   if [ "$n" -gt 0 ]; then echo "copilot review landed"; exit 0; fi
-  sleep 30
+  sleep 15
 done
 echo "copilot review timed out"; exit 1
 ```
