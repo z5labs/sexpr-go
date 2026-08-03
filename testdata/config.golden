@@ -1,0 +1,13 @@
+; Server configuration.
+;
+; Values here are read at startup.
+(server (host "0.0.0.0") (port 8080) (tls #t) (timeout 30.5))
+#| The pools below are sized for the staging environment and are
+   deliberately small. |#
+(pools (read (min 1) (max 8)) (write (min 1) (max 4)))
+(features
+  logging
+  ; structured, JSON
+  metrics
+  tracing)
+(fallback . nil)

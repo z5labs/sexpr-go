@@ -1,0 +1,10 @@
+; Symbols and strings carrying text beyond ASCII.
+(λ (x) (* x x))
+
+(greetings
+  (english "hello")
+  (français "bonjour")
+  (日本語 "こんにちは")
+  (emoji "🎉 ok"))
+
+(escapes "tab\there" "quote\"here" "back\\slash" "unicode\u00e9 and \u0041")
