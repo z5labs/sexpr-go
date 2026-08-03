@@ -74,9 +74,14 @@ func (Nil) sexpr() {}
 
 // List represents a parenthesized list. An empty list has no elements and is
 // distinct from [Nil].
+//
+// Tail holds the datum after the dot of an improper list such as (a . b), and
+// is nil for a proper list. Elements always holds what precedes the dot, so
+// (a b . c) has two elements and a tail.
 type List struct {
 	Pos      Pos
 	Elements []Node
+	Tail     Node
 }
 
 func (List) sexpr() {}
@@ -284,8 +289,9 @@ func (p *parser) unexpectedEndOfTokens(expected ...TokenType) UnexpectedEndOfTok
 
 type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 
-// datumTokens are the token types which may begin a datum. Dotted pairs and
-// quote forms extend this in later stories.
+// datumTokens are the token types which may begin a datum. Quote forms extend
+// this in a later story; the dot of a dotted pair does not, since it separates
+// two datums rather than starting one.
 var datumTokens = []TokenType{TokenLParen, TokenSymbol, TokenString, TokenNumber, TokenBool}
 
 func parseFile(p *parser, file *File) (parserAction[*File], error) {
@@ -332,12 +338,67 @@ func (p *parser) parseList(pos Pos, depth int) (Node, error) {
 			return list, nil
 		}
 
+		if tok.Type == TokenDot {
+			// A dot must separate two halves, so something has to precede it.
+			if len(list.Elements) == 0 {
+				return nil, UnexpectedTokenError{
+					Expected: datumTokens,
+					Actual:   tok,
+				}
+			}
+
+			tail, err := p.parseTail(depth)
+			if err != nil {
+				return nil, err
+			}
+			list.Tail = tail
+
+			return list, nil
+		}
+
 		element, err := p.parseDatum(tok, depth)
 		if err != nil {
 			return nil, err
 		}
 		list.Elements = append(list.Elements, element)
 	}
+}
+
+// parseTail reads the single datum after a dot and the closing parenthesis
+// which must follow it. The dot has already been consumed, and depth is that of
+// the list being read, since the tail sits inside the same list.
+func (p *parser) parseTail(depth int) (Node, error) {
+	tok, err, ok := p.read()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, p.unexpectedEndOfTokens(datumTokens...)
+	}
+
+	// A closing parenthesis here means the tail is missing, as in "(a . )",
+	// which parseDatum reports as the unexpected token it is.
+	tail, err := p.parseDatum(tok, depth)
+	if err != nil {
+		return nil, err
+	}
+
+	// Exactly one datum may follow the dot, so the list must end here.
+	closing, err, ok := p.read()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, p.unexpectedEndOfTokens(TokenRParen)
+	}
+	if closing.Type != TokenRParen {
+		return nil, UnexpectedTokenError{
+			Expected: []TokenType{TokenRParen},
+			Actual:   closing,
+		}
+	}
+
+	return tail, nil
 }
 
 // parseDatum turns tok, and any tokens belonging with it, into a node. depth

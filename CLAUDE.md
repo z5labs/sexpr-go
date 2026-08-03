@@ -352,6 +352,11 @@ along rather than restarting the count, otherwise the bound stops holding.
 The limit is exported so callers can see it, and the tests parse at exactly
 `MaxDepth` to show the bound is reachable rather than merely theoretical.
 
+A dotted pair's `Tail` is parsed at the *same* depth as the list's elements,
+since it sits inside that list. There is a test which nests exclusively through
+tails and expects the bound to still apply, so getting this wrong fails loudly
+rather than silently opening a way around the limit.
+
 ### Comments Never Reach a Parse Action
 
 `parser.advance` drops `TokenComment` so that every parse action sees only
