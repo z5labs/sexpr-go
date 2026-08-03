@@ -631,6 +631,50 @@ func TestTokenizerCopyNested(t *testing.T) {
 	}
 }
 
+func TestTokenizerCopyNestedUnevenDelimiters(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		src      string
+		open     []rune
+		closing  []rune
+		expected string
+	}{
+		{
+			name:     "closing longer than open",
+			open:     []rune{'<'},
+			closing:  []rune{'-', '>'},
+			src:      `a <b-> c-> rest`,
+			expected: "a <b-> c->",
+		},
+		{
+			name:     "open longer than closing",
+			open:     []rune{'<', '-'},
+			closing:  []rune{'>'},
+			src:      `a <-b> c> rest`,
+			expected: "a <-b> c>",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tk := &tokenizer{
+				pos: Pos{Line: 1, Column: 1},
+				buf: bufio.NewReader(strings.NewReader(tc.src)),
+			}
+
+			var dst bytes.Buffer
+			err := tk.copyNested(&dst, tc.open, tc.closing)
+
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, dst.String())
+		})
+	}
+}
+
 // errReader fails every read with a non-EOF error.
 type errReader struct{ err error }
 

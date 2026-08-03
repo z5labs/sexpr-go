@@ -181,17 +181,30 @@ func (t *tokenizer) copyUntil(dst *bytes.Buffer, delim []rune) error {
 	}
 }
 
-// copyNested copies a construct delimited by open and close, assuming the
+// endsWith reports whether window's trailing runes are exactly delim.
+func endsWith(window, delim []rune) bool {
+	if len(window) < len(delim) {
+		return false
+	}
+	return slices.Equal(window[len(window)-len(delim):], delim)
+}
+
+// copyNested copies a construct delimited by open and closing, assuming the
 // caller has already consumed one opening delimiter, and stops once that
-// opening delimiter's matching close is consumed. Nested open/close pairs are
+// opening delimiter's matching close is consumed. Nested open/closing pairs are
 // counted rather than terminating the copy, which is why [tokenizer.copyUntil]
 // cannot serve here. Everything read, including the final closing delimiter, is
 // written to dst.
+//
+// open and closing may differ in length. They must not be suffixes of one
+// another, since a match is decided on the trailing runes read so far.
 func (t *tokenizer) copyNested(dst *bytes.Buffer, open, closing []rune) error {
-	// window holds the trailing runes which may complete either delimiter. It is
-	// reset after a match so that a delimiter is never counted twice, letting
-	// runs like "#|#|" nest as two separate opens.
-	window := make([]rune, 0, len(open))
+	// window holds the trailing runes which may complete either delimiter, so it
+	// must be wide enough for the longer of the two. It is reset after a match so
+	// that a delimiter rune is never counted twice, letting runs like "#|#|" nest
+	// as two separate opens.
+	width := max(len(open), len(closing))
+	window := make([]rune, 0, width)
 
 	for depth := 1; ; {
 		r, size, err := t.buf.ReadRune()
@@ -213,15 +226,15 @@ func (t *tokenizer) copyNested(dst *bytes.Buffer, open, closing []rune) error {
 		}
 
 		window = append(window, r)
-		if len(window) > len(open) {
-			window = window[1:]
+		if len(window) > width {
+			window = window[len(window)-width:]
 		}
 
 		switch {
-		case slices.Equal(window, open):
+		case endsWith(window, open):
 			depth++
 			window = window[:0]
-		case slices.Equal(window, closing):
+		case endsWith(window, closing):
 			depth--
 			window = window[:0]
 			if depth == 0 {

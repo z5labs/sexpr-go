@@ -177,9 +177,10 @@ lexemes such as symbols, line comments, and numbers.
 
 `copyUntil(dst *bytes.Buffer, delim []rune) error` copies runes until the
 delimiter sequence is consumed, writing everything before it — use it for
-terminated constructs such as block comments. If the input ends before the
-delimiter arrives it flushes what it consumed and returns
-`io.ErrUnexpectedEOF`, so `dst` always holds the full lexeme either way.
+terminated constructs which cannot contain themselves, where the first
+delimiter always ends the construct. If the input ends before the delimiter
+arrives it flushes what it consumed and returns `io.ErrUnexpectedEOF`, so `dst`
+always holds the full lexeme either way.
 
 `copyNested(dst *bytes.Buffer, open, closing []rune) error` copies a construct
 whose delimiters nest, counting depth instead of stopping at the first close.
