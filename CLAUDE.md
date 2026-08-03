@@ -247,6 +247,24 @@ number", and it is what decides whether a bad lexeme is an error or a symbol:
 `--1` is a malformed number, while `->x2` and `-e10` are ordinary symbols. Keep
 that distinction in mind before loosening either one.
 
+### Hash Dispatch
+
+`#` never stands alone. `tokenizeHash` reads the character after it and routes:
+`|` opens a block comment, `t` and `f` begin a boolean, and anything else is
+rejected. Adding a new `#` form means adding a case there.
+
+Two failure modes are deliberately distinguished:
+
+- **Unknown dispatch** (`#x`, `#1`, a trailing `#`) — nothing is known about
+  what was intended, so the error is about the whole form and anchors at the
+  `#`.
+- **Known dispatch with trailing junk** (`#tx`, `#truex`) — the construct is
+  identified and the offending characters are, too, so the error anchors at
+  where the junk starts.
+
+Booleans scan the whole atom run rather than stopping after `t`, which is what
+makes `#tx` an error instead of `#t` followed by the symbol `x`.
+
 ### Naming Note
 
 In `avro-go/idl`, `TokenSymbol` means punctuation. Here "symbol" means the Lisp

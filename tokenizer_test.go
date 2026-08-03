@@ -27,10 +27,10 @@ func TestTokenizerErrors(t *testing.T) {
 	}{
 		{
 			name: "unexpected character at start of input",
-			src:  `#t`,
+			src:  `[a]`,
 			expectedErr: UnexpectedCharacterError{
 				Pos: Pos{Line: 1, Column: 1},
-				R:   '#',
+				R:   '[',
 			},
 		},
 		{
@@ -205,6 +205,56 @@ func TestTokenizerErrors(t *testing.T) {
 			expectedErr: UnexpectedCharacterError{
 				Pos: Pos{Line: 1, Column: 1},
 				R:   '#',
+			},
+		},
+		{
+			name: "hash followed by a digit",
+			src:  `#1`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 1, Column: 1},
+				R:   '#',
+			},
+		},
+		{
+			name: "boolean with trailing junk",
+			src:  `#tx`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 1, Column: 3},
+				R:   'x',
+			},
+		},
+		{
+			name: "long boolean spelling with trailing junk",
+			src:  `#truex`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 1, Column: 6},
+				R:   'x',
+			},
+		},
+		{
+			name: "false with trailing junk",
+			src:  `#falsex`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 1, Column: 7},
+				R:   'x',
+			},
+		},
+		{
+			name: "incomplete boolean spelling",
+			src:  `#tru`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 1, Column: 3},
+				R:   'r',
+			},
+		},
+		{
+			name: "boolean junk reports its own position",
+			src: `(and
+  #t
+  #fx)`,
+			expectedErr: UnexpectedCharacterError{
+				Pos: Pos{Line: 3, Column: 5},
+				R:   'x',
 			},
 		},
 		{
@@ -747,6 +797,85 @@ line two"
 			},
 		},
 		{
+			name: "short boolean spellings",
+			src:  `(#t #f)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenBool, Value: []byte("#t")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenBool, Value: []byte("#f")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "long boolean spellings",
+			src:  `(#true #false)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenBool, Value: []byte("#true")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenBool, Value: []byte("#false")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a boolean terminated by end of input",
+			src:  `#t`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenBool, Value: []byte("#t")},
+			},
+		},
+		{
+			name: "a boolean delimited by a parenthesis",
+			src:  `#t)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenBool, Value: []byte("#t")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a boolean as the tail of a dotted pair",
+			src:  `(a . #t)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenDot, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenBool, Value: []byte("#t")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "nil is an ordinary symbol",
+			src:  `(nil #t)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("nil")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenBool, Value: []byte("#t")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "symbols named like booleans are not booleans",
+			src:  `(t f true false)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("t")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte("f")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("true")},
+				{Pos: Pos{Line: 1, Column: 11}, Type: TokenSymbol, Value: []byte("false")},
+				{Pos: Pos{Line: 1, Column: 16}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "booleans alongside a block comment",
+			src:  `(#t #|c|# #f)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenBool, Value: []byte("#t")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenComment, Value: []byte("#|c|#")},
+				{Pos: Pos{Line: 1, Column: 11}, Type: TokenBool, Value: []byte("#f")},
+				{Pos: Pos{Line: 1, Column: 13}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
 			name: "parentheses immediately adjacent to symbols",
 			src:  `((a)b)`,
 			expected: []Token{
@@ -859,6 +988,38 @@ func TestUnterminatedCommentError(t *testing.T) {
 
 		require.Equal(t, "unterminated block comment at line 2, column 5", err.Error())
 	})
+}
+
+func TestBoolPrefixLen(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		spelling string
+		expected int
+	}{
+		// A spelling is accepted only when the prefix covers all of it.
+		{spelling: "t", expected: 1},
+		{spelling: "f", expected: 1},
+		{spelling: "true", expected: 4},
+		{spelling: "false", expected: 5},
+		// Anything past the prefix is where the trailing junk starts.
+		{spelling: "tx", expected: 1},
+		{spelling: "tru", expected: 1},
+		{spelling: "truex", expected: 4},
+		{spelling: "fx", expected: 1},
+		{spelling: "fals", expected: 1},
+		{spelling: "falsex", expected: 5},
+		{spelling: "x", expected: 0},
+		{spelling: "", expected: 0},
+	}
+
+	for _, tc := range testCases {
+		t.Run("measures "+tc.spelling, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tc.expected, boolPrefixLen(tc.spelling))
+		})
+	}
 }
 
 func TestInvalidNumberError(t *testing.T) {

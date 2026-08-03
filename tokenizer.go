@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Pos represents the position of a token in the input.
@@ -48,6 +49,7 @@ const (
 	TokenString                   // e.g. "hello"
 	TokenNumber                   // e.g. 42, -0.5, 1.5e-3
 	TokenDot                      // "." separating the halves of a dotted pair
+	TokenBool                     // #t, #true, #f, or #false
 )
 
 func (tt TokenType) String() string {
@@ -66,6 +68,8 @@ func (tt TokenType) String() string {
 		return "Number"
 	case TokenDot:
 		return "Dot"
+	case TokenBool:
+		return "Bool"
 	default:
 		panic(fmt.Sprintf("unknown token type: %d", tt))
 	}
@@ -555,6 +559,7 @@ var (
 // are recognised for now; the remaining hash forms land in a later story.
 func tokenizeHash(pos Pos) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		spellingPos := t.pos
 		r, err := t.next()
 		if err != nil {
 			// A trailing '#' is an incomplete dispatch rather than a clean end.
@@ -567,7 +572,71 @@ func tokenizeHash(pos Pos) tokenizerAction {
 		if r == '|' {
 			return tokenizeBlockComment(pos)
 		}
+		if r == 't' || r == 'f' {
+			return tokenizeBool(pos, spellingPos, r)
+		}
+
+		// The dispatch itself is unrecognised, so the error is about the whole
+		// '#' form rather than any one character within it.
 		return yieldErrorOr(UnexpectedCharacterError{Pos: pos, R: '#'}, nil)
+	}
+}
+
+// boolSpellings are the accepted spellings of a boolean literal after its '#',
+// ordered longest first so that the longest valid prefix is found.
+var boolSpellings = []string{"true", "false", "t", "f"}
+
+// boolPrefixLen returns the length of the longest accepted spelling which s
+// begins with, or zero if it begins with none of them. Anything beyond that
+// length is trailing junk, as in "#tx".
+func boolPrefixLen(s string) int {
+	for _, spelling := range boolSpellings {
+		if strings.HasPrefix(s, spelling) {
+			return len(spelling)
+		}
+	}
+	return 0
+}
+
+// tokenizeBool scans a boolean literal. The '#' and the leading 't' or 'f' have
+// already been consumed; pos is the position of the '#', spellingPos that of
+// the character after it, and first that character.
+//
+// The whole atom run is scanned so that a boolean must be delimited: "#tx" is
+// rejected rather than read as "#t" followed by the symbol "x".
+func tokenizeBool(pos, spellingPos Pos, first rune) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		var spelling bytes.Buffer
+		spelling.WriteRune(first)
+
+		err := t.copyIf(&spelling, isAtomRune)
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+			return yieldErrorOr(err, nil)
+		}
+
+		word := spelling.String()
+		if n := boolPrefixLen(word); n != len(word) {
+			// Point at where the trailing junk starts. Every accepted spelling is
+			// ASCII, so the prefix length is also its column width.
+			junk, _ := utf8.DecodeRuneInString(word[n:])
+			return yieldErrorOr(
+				UnexpectedCharacterError{
+					Pos: Pos{Line: spellingPos.Line, Column: spellingPos.Column + n},
+					R:   junk,
+				},
+				nil,
+			)
+		}
+
+		tok := Token{Pos: pos, Type: TokenBool, Value: append([]byte("#"), word...)}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			return yieldTokenThen(tok, nil)
+		}
+
+		return yieldErrorOr(
+			err,
+			yieldTokenThen(tok, skipWhitespace(tokenizeSexpr)),
+		)
 	}
 }
 
