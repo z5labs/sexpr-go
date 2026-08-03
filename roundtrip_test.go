@@ -210,7 +210,7 @@ func TestRoundTripGoldenFiles(t *testing.T) {
 			golden := strings.TrimSuffix(source, ".sexpr") + ".golden"
 
 			if *update {
-				require.NoError(t, os.WriteFile(golden, []byte(printed), 0o600))
+				require.NoError(t, os.WriteFile(golden, []byte(printed), 0o644))
 				return
 			}
 
