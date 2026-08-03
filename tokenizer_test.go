@@ -113,6 +113,67 @@ func TestTokenizerErrors(t *testing.T) {
 			},
 		},
 		{
+			name: "unterminated string literal",
+			src:  `"hello`,
+			expectedErr: UnterminatedStringError{
+				Pos: Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "unterminated string literal reports the opening quote",
+			src: `(a)
+  "dangling`,
+			expectedErr: UnterminatedStringError{
+				Pos: Pos{Line: 2, Column: 3},
+			},
+		},
+		{
+			name: "string ending on a trailing backslash",
+			src:  `"abc\`,
+			expectedErr: UnterminatedStringError{
+				Pos: Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "string ending mid unicode escape",
+			src:  `"\u00`,
+			expectedErr: UnterminatedStringError{
+				Pos: Pos{Line: 1, Column: 1},
+			},
+		},
+		{
+			name: "unrecognized escape sequence",
+			src:  `"\q"`,
+			expectedErr: InvalidEscapeError{
+				Pos: Pos{Line: 1, Column: 2},
+				R:   'q',
+			},
+		},
+		{
+			name: "unicode escape with non-hex digits",
+			src:  `"\uZZZZ"`,
+			expectedErr: InvalidEscapeError{
+				Pos: Pos{Line: 1, Column: 2},
+				R:   'u',
+			},
+		},
+		{
+			name: "unicode escape with too few hex digits",
+			src:  `"\u00e"`,
+			expectedErr: InvalidEscapeError{
+				Pos: Pos{Line: 1, Column: 2},
+				R:   'u',
+			},
+		},
+		{
+			name: "escape error reports the backslash position",
+			src:  `"ab\q"`,
+			expectedErr: InvalidEscapeError{
+				Pos: Pos{Line: 1, Column: 4},
+				R:   'q',
+			},
+		},
+		{
 			name: "unknown hash dispatch",
 			src:  `#x`,
 			expectedErr: UnexpectedCharacterError{
@@ -444,6 +505,86 @@ func TestTokenizer(t *testing.T) {
 			},
 		},
 		{
+			name: "a string literal",
+			src:  `"hello"`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte("hello")},
+			},
+		},
+		{
+			name: "an empty string literal",
+			src:  `""`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte("")},
+			},
+		},
+		{
+			name: "every recognized escape is preserved raw",
+			src:  `"\" \\ \n \r \t \b \f \u00e9"`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte(`\" \\ \n \r \t \b \f \u00e9`)},
+			},
+		},
+		{
+			name: "an escaped quote does not close the string",
+			src:  `"say \"hi\"" x`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte(`say \"hi\"`)},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenSymbol, Value: []byte("x")},
+			},
+		},
+		{
+			name: "a trailing escaped backslash does not swallow the quote",
+			src:  `"a\\" x`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte(`a\\`)},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenSymbol, Value: []byte("x")},
+			},
+		},
+		{
+			name: "a unicode escape with uppercase hex",
+			src:  `"\uABCD"`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte(`\uABCD`)},
+			},
+		},
+		{
+			name: "a string inside a form",
+			src:  `(f "hi")`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("f")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenString, Value: []byte("hi")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a literal newline inside a string advances the line",
+			src: `"line one
+line two"
+(a)`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte("line one\nline two")},
+				{Pos: Pos{Line: 3, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+				{Pos: Pos{Line: 3, Column: 2}, Type: TokenSymbol, Value: []byte("a")},
+				{Pos: Pos{Line: 3, Column: 3}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "delimiters inside a string are inert",
+			src:  `"(a) ; #| |#"`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte("(a) ; #| |#")},
+			},
+		},
+		{
+			name: "a string containing non-ASCII text",
+			src:  `"héllo"`,
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte("héllo")},
+			},
+		},
+		{
 			name: "parentheses immediately adjacent to symbols",
 			src:  `((a)b)`,
 			expected: []Token{
@@ -555,6 +696,30 @@ func TestUnterminatedCommentError(t *testing.T) {
 		err := UnterminatedCommentError{Pos: Pos{Line: 2, Column: 5}}
 
 		require.Equal(t, "unterminated block comment at line 2, column 5", err.Error())
+	})
+}
+
+func TestUnterminatedStringError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will report the position of the opening quote", func(t *testing.T) {
+		t.Parallel()
+
+		err := UnterminatedStringError{Pos: Pos{Line: 4, Column: 9}}
+
+		require.Equal(t, "unterminated string literal at line 4, column 9", err.Error())
+	})
+}
+
+func TestInvalidEscapeError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will report the escape and its position", func(t *testing.T) {
+		t.Parallel()
+
+		err := InvalidEscapeError{Pos: Pos{Line: 2, Column: 6}, R: 'q'}
+
+		require.Equal(t, `invalid escape sequence '\q' at line 2, column 6`, err.Error())
 	})
 }
 

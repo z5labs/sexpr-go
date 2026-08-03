@@ -46,6 +46,7 @@ const (
 	TokenRParen                   // ")"
 	TokenSymbol                   // e.g. add, x, +, ->list
 	TokenComment                  // e.g. ; comment or #| comment |#
+	TokenString                   // e.g. "hello"
 )
 
 func (tt TokenType) String() string {
@@ -58,6 +59,8 @@ func (tt TokenType) String() string {
 		return "Symbol"
 	case TokenComment:
 		return "Comment"
+	case TokenString:
+		return "String"
 	default:
 		panic(fmt.Sprintf("unknown token type: %d", tt))
 	}
@@ -244,6 +247,64 @@ func (t *tokenizer) copyNested(dst *bytes.Buffer, open, closing []rune) error {
 	}
 }
 
+// isHexDigit reports whether r is a hexadecimal digit in either case.
+func isHexDigit(r rune) bool {
+	switch {
+	case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		return true
+	default:
+		return false
+	}
+}
+
+// copyEscape consumes the escape sequence following a backslash and writes it
+// to dst verbatim, backslash included. The backslash itself has already been
+// consumed and escapePos is its position.
+//
+// Escapes are validated but not decoded — the parser turns them into their
+// real runes, so the token keeps the source text.
+func (t *tokenizer) copyEscape(dst *bytes.Buffer, escapePos Pos) error {
+	esc, err := t.next()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+
+	switch esc {
+	case '"', '\\', 'n', 'r', 't', 'b', 'f':
+		dst.WriteRune('\\')
+		dst.WriteRune(esc)
+		return nil
+	case 'u':
+		// \u must be followed by exactly four hex digits.
+		var digits [4]rune
+		for i := range digits {
+			d, err := t.next()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return io.ErrUnexpectedEOF
+				}
+				return err
+			}
+			if !isHexDigit(d) {
+				return InvalidEscapeError{Pos: escapePos, R: 'u'}
+			}
+			digits[i] = d
+		}
+
+		dst.WriteRune('\\')
+		dst.WriteRune('u')
+		for _, d := range digits {
+			dst.WriteRune(d)
+		}
+		return nil
+	default:
+		return InvalidEscapeError{Pos: escapePos, R: esc}
+	}
+}
+
 type tokenizerAction func(t *tokenizer, yield func(Token, error) bool) tokenizerAction
 
 func yieldErrorOr(err error, next tokenizerAction) tokenizerAction {
@@ -300,6 +361,27 @@ func (e UnterminatedCommentError) Error() string {
 	return fmt.Sprintf("unterminated block comment at line %d, column %d", e.Pos.Line, e.Pos.Column)
 }
 
+// UnterminatedStringError is the error returned by the tokenizer when a string literal is never closed.
+type UnterminatedStringError struct {
+	Pos Pos
+}
+
+// Error implements the [error] interface.
+func (e UnterminatedStringError) Error() string {
+	return fmt.Sprintf("unterminated string literal at line %d, column %d", e.Pos.Line, e.Pos.Column)
+}
+
+// InvalidEscapeError is the error returned by the tokenizer when a string literal contains an unrecognized escape sequence.
+type InvalidEscapeError struct {
+	Pos Pos
+	R   rune
+}
+
+// Error implements the [error] interface.
+func (e InvalidEscapeError) Error() string {
+	return fmt.Sprintf("invalid escape sequence '\\%c' at line %d, column %d", e.R, e.Pos.Line, e.Pos.Column)
+}
+
 func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 	return skipWhitespace(
 		func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
@@ -318,6 +400,8 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
 						return tokenizeLineComment(pos)
 					case r == '#':
 						return tokenizeHash(pos)
+					case r == '"':
+						return tokenizeString(pos)
 					case isSymbolRune(r):
 						err = t.backup(pos)
 						return yieldErrorOr(err, tokenizeSymbol)
@@ -440,6 +524,48 @@ func tokenizeBlockComment(pos Pos) tokenizerAction {
 				skipWhitespace(tokenizeSexpr),
 			),
 		)
+	}
+}
+
+// tokenizeString scans a double quoted string literal. The opening quote has
+// already been consumed and neither quote appears in the token's value, which
+// holds the source text with escape sequences left undecoded.
+func tokenizeString(pos Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		// Value stays non-nil so that an empty literal is an empty value rather
+		// than an absent one.
+		str := bytes.NewBuffer([]byte{})
+
+		for {
+			cur := t.pos
+			r, err := t.next()
+			if err != nil {
+				// Running out of input mid-literal means the closing quote never
+				// arrived, which is an error rather than a clean end.
+				if errors.Is(err, io.EOF) {
+					return yieldErrorOr(UnterminatedStringError{Pos: pos}, nil)
+				}
+				return yieldErrorOr(err, nil)
+			}
+
+			switch r {
+			case '"':
+				return yieldTokenThen(
+					Token{Pos: pos, Type: TokenString, Value: str.Bytes()},
+					skipWhitespace(tokenizeSexpr),
+				)
+			case '\\':
+				if err := t.copyEscape(str, cur); err != nil {
+					if errors.Is(err, io.ErrUnexpectedEOF) {
+						return yieldErrorOr(UnterminatedStringError{Pos: pos}, nil)
+					}
+					return yieldErrorOr(err, nil)
+				}
+			default:
+				// A literal newline is allowed; next has already advanced the line.
+				str.WriteRune(r)
+			}
+		}
 	}
 }
 
