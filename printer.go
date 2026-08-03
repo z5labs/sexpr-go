@@ -134,7 +134,6 @@ func printFile(pr *printer, f *File) printerAction {
 	return printNodes(0, 0)
 }
 
-// printNodes writes each top level datum on its own line.
 // printNodes writes each top level datum on its own line, with the file's
 // comments emitted in position order among them.
 func printNodes(nodeIdx, commentIdx int) printerAction {
