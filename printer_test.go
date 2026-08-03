@@ -568,6 +568,134 @@ func commentTexts(f *File) []string {
 	return out
 }
 
+func TestPrintUnquoteBeforeAtSymbol(t *testing.T) {
+	t.Parallel()
+
+	// Found by FuzzRoundTrip. "," written straight against a symbol starting
+	// with "@" spells ",@", which reads back as unquote-splicing rather than as
+	// an unquote of that symbol, so a space has to separate them.
+	testCases := []struct {
+		name     string
+		src      string
+		expected string
+	}{
+		{name: "the at symbol alone", src: "(, @)", expected: "(, @)\n"},
+		{name: "a symbol starting with at", src: "(, @foo)", expected: "(, @foo)\n"},
+		{name: "at the top level", src: ", @", expected: ", @\n"},
+		{name: "genuine unquote splicing is untouched", src: ",@x", expected: ",@x\n"},
+		{name: "another macro needs no space", src: "'@x", expected: "'@x\n"},
+		{name: "quasiquote needs no space", src: "`@x", expected: "`@x\n"},
+		{name: "an at symbol not after a macro", src: "(@ a)", expected: "(@ a)\n"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+			require.NoError(t, err)
+
+			var buf bytes.Buffer
+			require.NoError(t, Print(&buf, file))
+			require.Equal(t, tc.expected, buf.String())
+
+			// The point of the space is that this reparses to the same thing.
+			again, err := Parse(strings.NewReader(buf.String()))
+			require.NoError(t, err)
+			require.Equal(t, shapeOf(file.Nodes), shapeOf(again.Nodes))
+		})
+	}
+}
+
+func TestPrintRejectsUnwritableSymbols(t *testing.T) {
+	t.Parallel()
+
+	// A symbol is written verbatim, so any value which would read back as
+	// something else has to be refused rather than silently changed.
+	unwritable := []string{
+		"",    // vanishes entirely
+		"123", // reads back as an Int
+		"1.5", // reads back as a Float
+		"nil", // reads back as a Nil
+		".",   // reads back as the dotted pair marker
+		"a b", // reads back as two symbols
+		"(",   // does not parse
+		")",   // does not parse
+		"a)b", // does not parse
+		";x",  // reads back as a comment
+		`"q`,  // does not parse
+		"#t",  // reads back as a Bool
+	}
+
+	for _, value := range unwritable {
+		t.Run(strconv.Quote(value), func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			err := Print(&buf, &File{Nodes: []Node{Symbol{Value: value}}})
+
+			require.Equalf(t, InvalidSymbolError{Value: value}, err, "printed %q", buf.String())
+		})
+	}
+}
+
+func TestPrintAcceptsWritableSymbols(t *testing.T) {
+	t.Parallel()
+
+	writable := []string{"a", "add", "->list", "-", "+", "...", "a.b", "x2", "-e10", "λ", "日本語", "@", "@foo"}
+
+	for _, value := range writable {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			require.NoError(t, Print(&buf, &File{Nodes: []Node{Symbol{Value: value}}}))
+
+			file, err := Parse(strings.NewReader(buf.String()))
+			require.NoError(t, err)
+			require.Equal(t, []Node{Symbol{Pos: Pos{Line: 1, Column: 1}, Value: value}}, file.Nodes)
+		})
+	}
+}
+
+// TestValidSymbolAgreesWithTheTokenizer keeps validSymbol from drifting away
+// from the rules it is meant to mirror.
+func TestValidSymbolAgreesWithTheTokenizer(t *testing.T) {
+	t.Parallel()
+
+	candidates := []string{
+		"a", "add", "->list", "-", "+", "...", "a.b", "x2", "-e10", "λ", "@", "@foo",
+		"", "123", "1.5", "nil", ".", "a b", "(", ")", "a)b", ";x", "#t", "1abc", "--1",
+		"'x", ",@", "a\tb", "a\nb", `"q`, "#|c|#",
+	}
+
+	for _, value := range candidates {
+		t.Run(strconv.Quote(value), func(t *testing.T) {
+			t.Parallel()
+
+			// The authority: does tokenizing this text give back exactly one
+			// symbol token carrying it, and does the parser keep it a symbol?
+			var tokens []Token
+			var tokenErr error
+			for tok, err := range Tokenize(strings.NewReader(value)) {
+				if err != nil {
+					tokenErr = err
+					break
+				}
+				tokens = append(tokens, tok)
+			}
+
+			roundTrips := tokenErr == nil &&
+				len(tokens) == 1 &&
+				tokens[0].Type == TokenSymbol &&
+				string(tokens[0].Value) == value &&
+				value != nilLiteral
+
+			require.Equalf(t, roundTrips, validSymbol(value), "validSymbol disagrees with the tokenizer for %q", value)
+		})
+	}
+}
+
 func TestPrintCommentErrors(t *testing.T) {
 	t.Parallel()
 
