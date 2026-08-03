@@ -6,13 +6,18 @@
 package sexpr
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
+
+// ErrNilFile is returned by [Print] when given a nil [File].
+var ErrNilFile = errors.New("cannot print a nil file")
 
 // UnsupportedNodeError is the error returned by the printer when it meets a node it cannot write.
 type UnsupportedNodeError struct {
@@ -93,7 +98,7 @@ func writeThen(s string, next printerAction) printerAction {
 
 func printFile(pr *printer, f *File) printerAction {
 	if f == nil {
-		pr.fail(fmt.Errorf("sexpr: cannot print a nil File"))
+		pr.fail(ErrNilFile)
 		return nil
 	}
 	return printNodes(0)
@@ -189,9 +194,11 @@ func quoteString(s string) string {
 		case '\f':
 			out.WriteString(`\f`)
 		default:
-			// Remaining control characters have no short escape, and an invalid
+			// Every other control character has no short escape, and an invalid
 			// byte would not survive being written raw, so both go out as \uXXXX.
-			if r < 0x20 || r == utf8.RuneError {
+			// unicode.IsControl covers DEL and the C1 range as well as C0, so
+			// none of them reach the output as unprintable bytes.
+			if unicode.IsControl(r) || r == utf8.RuneError {
 				fmt.Fprintf(&out, `\u%04X`, r)
 				continue
 			}

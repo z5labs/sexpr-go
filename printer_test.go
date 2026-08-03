@@ -178,6 +178,7 @@ func TestPrintReparses(t *testing.T) {
 		{name: "a string with a backslash", nodes: []Node{String{Value: `a\b`}}},
 		{name: "a string with every short escape", nodes: []Node{String{Value: "\"\\\n\r\t\b\f"}}},
 		{name: "a string with control characters", nodes: []Node{String{Value: "\x00\x01\x1f"}}},
+		{name: "a string with DEL and C1 controls", nodes: []Node{String{Value: "\u007f\u0080\u009f"}}},
 		{name: "a string with non-ASCII text", nodes: []Node{String{Value: "héllo ꯍ"}}},
 		{name: "a string which looks like a form", nodes: []Node{String{Value: "(a . b) ; c"}}},
 		{name: "several datums", nodes: []Node{Symbol{Value: "a"}, Int{Value: 1}, String{Value: "s"}, Bool{Value: false}, Nil{}}},
@@ -211,7 +212,9 @@ func valueOf(n Node) any {
 	case Int:
 		return node.Value
 	case Float:
-		return node.Value
+		// Compared as bits so that a lost sign on zero is caught: -0.0 and 0.0
+		// are equal under both == and reflect.DeepEqual.
+		return math.Float64bits(node.Value)
 	case Bool:
 		return node.Value
 	case Nil:
