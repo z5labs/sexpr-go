@@ -365,11 +365,24 @@ overflow which takes the process down — verified by removing the increment and
 watching the runtime abort. Treat "does it recurse" rather than "does it look
 nested" as the test for whether a construct owes the budget a level.
 
-### Comments Never Reach a Parse Action
+### Comments Are Drained, Not Dropped
 
-`parser.advance` drops `TokenComment` so that every parse action sees only
-tokens which carry a datum. Collecting comments into `File.Comments` happens
-there too.
+`parser.advance` returns every token, comments included. Each site which expects
+a datum calls `parser.collectComments` first, which drains the comment tokens
+sitting there into the enclosing container and leaves the reader on the next
+real token.
+
+That container is a `*File` at the top level and a `*List` inside one, so the
+comment slice is threaded through `parseDatum`, `parseTail`, and `parseQuote`
+rather than being a field on the parser. A comment therefore belongs to the list
+that encloses it, not to the node it happens to precede — `((a ; inner\n) ; outer\n)`
+puts each comment on a different list.
+
+Appending as they are met is what keeps them in position order; nothing sorts.
+
+Add a `collectComments` call to any new site which reads a token expecting a
+datum, or comments there will surface as an `UnexpectedTokenError` instead of
+being recorded.
 
 ### Sealed Node Interface
 

@@ -82,6 +82,10 @@ type List struct {
 	Pos      Pos
 	Elements []Node
 	Tail     Node
+
+	// Comments holds the comments written inside this list, in the order they
+	// appear. They are attached to the list rather than to any one element.
+	Comments []*Comment
 }
 
 func (List) sexpr() {}
@@ -241,24 +245,42 @@ type parser struct {
 	pos     Pos
 }
 
-// advance pulls the next token which carries a datum, skipping comments.
+// advance pulls the next token, comments included.
+//
+// Comments are not datums, so every site which expects one drains them first
+// with [parser.collectComments]; that is what keeps them out of File.Nodes and
+// List.Elements while still recording them.
 func (p *parser) advance() (Token, error, bool) {
+	tok, err, ok := p.next()
+	if err != nil {
+		return Token{}, err, false
+	}
+	if !ok {
+		return Token{}, nil, false
+	}
+	return tok, nil, true
+}
+
+// collectComments drains the comment tokens at the current position into dst,
+// leaving the reader on the next token which is not a comment.
+//
+// Comments land in the container being read, so dst is the enclosing [File] or
+// [List]. Appending as they are met keeps them in position order.
+func (p *parser) collectComments(dst *[]*Comment) error {
 	for {
-		tok, err, ok := p.next()
+		tok, err, ok := p.peek()
 		if err != nil {
-			return Token{}, err, false
+			return err
 		}
-		if !ok {
-			return Token{}, nil, false
-		}
-
-		// A comment is not a datum, so it never reaches the parse actions.
-		// Collecting comments into File.Comments is a later story.
-		if tok.Type == TokenComment {
-			continue
+		if !ok || tok.Type != TokenComment {
+			return nil
 		}
 
-		return tok, nil, true
+		if _, err, _ = p.read(); err != nil {
+			return err
+		}
+
+		*dst = append(*dst, &Comment{Pos: tok.Pos, Text: string(tok.Value)})
 	}
 }
 
@@ -332,6 +354,12 @@ type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 var datumTokens = []TokenType{TokenLParen, TokenQuote, TokenSymbol, TokenString, TokenNumber, TokenBool}
 
 func parseFile(p *parser, file *File) (parserAction[*File], error) {
+	// Comments before a top level datum, and any trailing ones, belong to the
+	// file.
+	if err := p.collectComments(&file.Comments); err != nil {
+		return nil, err
+	}
+
 	tok, err, ok := p.read()
 	if err != nil {
 		return nil, err
@@ -341,7 +369,7 @@ func parseFile(p *parser, file *File) (parserAction[*File], error) {
 		return nil, nil
 	}
 
-	node, err := p.parseDatum(tok, 0)
+	node, err := p.parseDatum(tok, 0, &file.Comments)
 	if err != nil {
 		return nil, err
 	}
@@ -362,6 +390,11 @@ func (p *parser) parseList(pos Pos, depth int) (Node, error) {
 
 	list := List{Pos: pos}
 	for {
+		// Comments inside the list belong to it, wherever in the list they sit.
+		if err := p.collectComments(&list.Comments); err != nil {
+			return nil, err
+		}
+
 		tok, err, ok := p.read()
 		if err != nil {
 			return nil, err
@@ -384,7 +417,7 @@ func (p *parser) parseList(pos Pos, depth int) (Node, error) {
 				}
 			}
 
-			tail, err := p.parseTail(depth)
+			tail, err := p.parseTail(depth, &list.Comments)
 			if err != nil {
 				return nil, err
 			}
@@ -393,7 +426,7 @@ func (p *parser) parseList(pos Pos, depth int) (Node, error) {
 			return list, nil
 		}
 
-		element, err := p.parseDatum(tok, depth)
+		element, err := p.parseDatum(tok, depth, &list.Comments)
 		if err != nil {
 			return nil, err
 		}
@@ -404,7 +437,11 @@ func (p *parser) parseList(pos Pos, depth int) (Node, error) {
 // parseTail reads the single datum after a dot and the closing parenthesis
 // which must follow it. The dot has already been consumed, and depth is that of
 // the list being read, since the tail sits inside the same list.
-func (p *parser) parseTail(depth int) (Node, error) {
+func (p *parser) parseTail(depth int, comments *[]*Comment) (Node, error) {
+	if err := p.collectComments(comments); err != nil {
+		return nil, err
+	}
+
 	tok, err, ok := p.read()
 	if err != nil {
 		return nil, err
@@ -415,12 +452,16 @@ func (p *parser) parseTail(depth int) (Node, error) {
 
 	// A closing parenthesis here means the tail is missing, as in "(a . )",
 	// which parseDatum reports as the unexpected token it is.
-	tail, err := p.parseDatum(tok, depth)
+	tail, err := p.parseDatum(tok, depth, comments)
 	if err != nil {
 		return nil, err
 	}
 
 	// Exactly one datum may follow the dot, so the list must end here.
+	if err := p.collectComments(comments); err != nil {
+		return nil, err
+	}
+
 	closing, err, ok := p.read()
 	if err != nil {
 		return nil, err
@@ -452,7 +493,7 @@ var quoteKinds = map[string]QuoteKind{
 // Quotes count against depth even though they do not look like nesting: a run
 // of them recurses just as a run of open parentheses does, so a long enough one
 // would otherwise exhaust the stack.
-func (p *parser) parseQuote(tok Token, depth int) (Node, error) {
+func (p *parser) parseQuote(tok Token, depth int, comments *[]*Comment) (Node, error) {
 	if depth > MaxDepth {
 		return nil, MaxDepthExceededError{Pos: tok.Pos, Depth: MaxDepth}
 	}
@@ -461,6 +502,11 @@ func (p *parser) parseQuote(tok Token, depth int) (Node, error) {
 	kind, ok := quoteKinds[string(tok.Value)]
 	if !ok {
 		return nil, UnexpectedTokenError{Expected: datumTokens, Actual: tok}
+	}
+
+	// A comment may sit between the macro and its datum.
+	if err := p.collectComments(comments); err != nil {
+		return nil, err
 	}
 
 	next, err, ok := p.read()
@@ -474,7 +520,7 @@ func (p *parser) parseQuote(tok Token, depth int) (Node, error) {
 
 	// A closing parenthesis here is reported by parseDatum as the unexpected
 	// token it is.
-	datum, err := p.parseDatum(next, depth)
+	datum, err := p.parseDatum(next, depth, comments)
 	if err != nil {
 		return nil, err
 	}
@@ -489,12 +535,12 @@ func (p *parser) parseQuote(tok Token, depth int) (Node, error) {
 // without recursing, such as a dotted pair's tail, shares the level of whatever
 // holds it. The count exists to bound recursion, so the question for a new
 // construct is whether it recurses, not whether it looks nested.
-func (p *parser) parseDatum(tok Token, depth int) (Node, error) {
+func (p *parser) parseDatum(tok Token, depth int, comments *[]*Comment) (Node, error) {
 	switch tok.Type {
 	case TokenLParen:
 		return p.parseList(tok.Pos, depth+1)
 	case TokenQuote:
-		return p.parseQuote(tok, depth+1)
+		return p.parseQuote(tok, depth+1, comments)
 	case TokenSymbol:
 		// nil is spelled like a symbol but denotes the empty value.
 		if string(tok.Value) == "nil" {
