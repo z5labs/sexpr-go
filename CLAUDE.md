@@ -450,6 +450,23 @@ func printNode(n Node, next printerAction) printerAction {
 }
 ```
 
+### One Renderer, Two Layers
+
+`writeInline` renders any node on a single line and is the only place a node's
+text is decided. `writeNode` sits above it: it renders inline, and if the result
+fits within `MaxLineWidth` from the current column it writes that, otherwise it
+breaks the node across lines and recurses. Adding a node kind means adding one
+case to `writeInline`; adding a *breakable* kind means a case in `writeNode` too.
+
+Indent is passed down, never accumulated in the printer, so nesting compounds
+naturally: a list breaking at column 2 indents its elements to 4. Only lists
+which do not fit are broken, so a short inner list stays inline inside a broken
+outer one.
+
+Both `writeInline` and `writeNode` carry a depth and stop at `MaxDepth`. `Parse`
+cannot produce anything deeper, but a hand built AST can, and the recursion here
+would otherwise overflow the stack exactly as the parser's would.
+
 ### Whatever Is Printed Must Reparse
 
 The printer's real contract is that `Print` then `Parse` gives back the same

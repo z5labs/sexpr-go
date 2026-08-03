@@ -109,6 +109,75 @@ func TestPrint(t *testing.T) {
 			expected: "\"héllo\"\n",
 		},
 		{
+			name:     "an empty list",
+			input:    &File{Nodes: []Node{List{}}},
+			expected: "()\n",
+		},
+		{
+			name: "a list of atoms",
+			input: &File{Nodes: []Node{List{Elements: []Node{
+				Symbol{Value: "a"}, Symbol{Value: "b"}, Symbol{Value: "c"},
+			}}}},
+			expected: "(a b c)\n",
+		},
+		{
+			name: "a nested list",
+			input: &File{Nodes: []Node{List{Elements: []Node{
+				Symbol{Value: "a"},
+				List{Elements: []Node{Symbol{Value: "b"}, Symbol{Value: "c"}}},
+				Symbol{Value: "d"},
+			}}}},
+			expected: "(a (b c) d)\n",
+		},
+		{
+			name: "a dotted pair",
+			input: &File{Nodes: []Node{List{
+				Elements: []Node{Symbol{Value: "a"}},
+				Tail:     Symbol{Value: "b"},
+			}}},
+			expected: "(a . b)\n",
+		},
+		{
+			name: "an improper list of several elements",
+			input: &File{Nodes: []Node{List{
+				Elements: []Node{Symbol{Value: "a"}, Symbol{Value: "b"}},
+				Tail:     Symbol{Value: "c"},
+			}}},
+			expected: "(a b . c)\n",
+		},
+		{
+			name: "every quote shorthand",
+			input: &File{Nodes: []Node{
+				Quote{Kind: QuoteKindQuote, Datum: Symbol{Value: "w"}},
+				Quote{Kind: QuoteKindQuasiquote, Datum: Symbol{Value: "x"}},
+				Quote{Kind: QuoteKindUnquote, Datum: Symbol{Value: "y"}},
+				Quote{Kind: QuoteKindUnquoteSplicing, Datum: Symbol{Value: "z"}},
+			}},
+			expected: "'w\n`x\n,y\n,@z\n",
+		},
+		{
+			name: "a quoted list is never expanded",
+			input: &File{Nodes: []Node{Quote{Kind: QuoteKindQuote, Datum: List{Elements: []Node{
+				Int{Value: 1}, Int{Value: 2},
+			}}}}},
+			expected: "'(1 2)\n",
+		},
+		{
+			name: "stacked quotes",
+			input: &File{Nodes: []Node{Quote{Kind: QuoteKindQuote, Datum: Quote{
+				Kind: QuoteKindQuote, Datum: Symbol{Value: "x"},
+			}}}},
+			expected: "''x\n",
+		},
+		{
+			name: "top level datums are newline separated",
+			input: &File{Nodes: []Node{
+				List{Elements: []Node{Symbol{Value: "a"}}},
+				List{Elements: []Node{Symbol{Value: "b"}}},
+			}},
+			expected: "(a)\n(b)\n",
+		},
+		{
 			name: "several datums of mixed kinds",
 			input: &File{Nodes: []Node{
 				Symbol{Value: "a"},
@@ -133,6 +202,159 @@ func TestPrint(t *testing.T) {
 			require.Equal(t, tc.expected, buf.String())
 		})
 	}
+}
+
+// symbols builds n symbols of the given width, so a list's single line width is
+// easy to reason about.
+func symbols(n, width int) []Node {
+	out := make([]Node, 0, n)
+	for i := range n {
+		out = append(out, Symbol{Value: strings.Repeat(string(rune('a'+i)), width)})
+	}
+	return out
+}
+
+// listOfWidth builds a list whose single line form is exactly width columns.
+func listOfWidth(width int) List {
+	// Seven symbols of eight characters, then a last one padded to fit.
+	elements := symbols(7, 8)
+	// "(" + 7*8 + 7 separators + " " + ")" is the fixed part.
+	fixed := 1 + 7*8 + 7 + 1
+	elements = append(elements, Symbol{Value: strings.Repeat("h", width-fixed)})
+	return List{Elements: elements}
+}
+
+func mustInline(n Node) string {
+	s, err := renderInline(n, 0)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+func TestListOfWidthIsExact(t *testing.T) {
+	t.Parallel()
+
+	// The wrapping cases below only mean what they say if these hold.
+	require.Len(t, mustInline(listOfWidth(MaxLineWidth)), MaxLineWidth)
+	require.Len(t, mustInline(listOfWidth(MaxLineWidth+1)), MaxLineWidth+1)
+}
+
+func TestPrintWrapping(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		input    *File
+		expected string
+	}{
+		{
+			// Widths are asserted below rather than hand counted, so the
+			// boundary cases cannot drift into meaning something else.
+			name:     "a list which exactly fills the width stays on one line",
+			input:    &File{Nodes: []Node{listOfWidth(MaxLineWidth)}},
+			expected: mustInline(listOfWidth(MaxLineWidth)) + "\n",
+		},
+		{
+			name:  "a list one column too wide breaks",
+			input: &File{Nodes: []Node{listOfWidth(MaxLineWidth + 1)}},
+			expected: "(aaaaaaaa\n" +
+				"  bbbbbbbb\n" +
+				"  cccccccc\n" +
+				"  dddddddd\n" +
+				"  eeeeeeee\n" +
+				"  ffffffff\n" +
+				"  gggggggg\n" +
+				"  " + strings.Repeat("h", 16) + ")\n",
+		},
+		{
+			name: "a broken list keeps short inner lists on one line",
+			input: &File{Nodes: []Node{List{Elements: []Node{
+				Symbol{Value: "outer"},
+				List{Elements: symbols(3, 22)},
+				Symbol{Value: "tail"},
+			}}}},
+			expected: "(outer\n" +
+				"  (" + strings.Repeat("a", 22) + " " + strings.Repeat("b", 22) + " " + strings.Repeat("c", 22) + ")\n" +
+				"  tail)\n",
+		},
+		{
+			name: "nested breaks indent cumulatively",
+			input: &File{Nodes: []Node{List{Elements: []Node{
+				Symbol{Value: "alpha"},
+				List{Elements: []Node{
+					Symbol{Value: "beta"},
+					List{Elements: symbols(3, 30)},
+				}},
+				Symbol{Value: "omega"},
+			}}}},
+			expected: "(alpha\n" +
+				"  (beta\n" +
+				"    (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+				"      bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n" +
+				"      cccccccccccccccccccccccccccccc))\n" +
+				"  omega)\n",
+		},
+		{
+			name: "a broken dotted pair puts the tail after the dot",
+			input: &File{Nodes: []Node{List{
+				Elements: symbols(2, 30),
+				Tail:     Symbol{Value: strings.Repeat("c", 30)},
+			}}},
+			expected: "(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+				"  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n" +
+				"  . cccccccccccccccccccccccccccccc)\n",
+		},
+		{
+			name:  "a broken quoted list indents past the macro",
+			input: &File{Nodes: []Node{Quote{Kind: QuoteKindQuote, Datum: List{Elements: symbols(3, 30)}}}},
+			expected: "'(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+				"   bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n" +
+				"   cccccccccccccccccccccccccccccc)\n",
+		},
+		{
+			name:     "an over-long atom is never broken",
+			input:    &File{Nodes: []Node{Symbol{Value: strings.Repeat("x", 100)}}},
+			expected: strings.Repeat("x", 100) + "\n",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			err := Print(&buf, tc.input)
+
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, buf.String())
+		})
+	}
+}
+
+func TestPrintWrappingRespectsTheWidth(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will keep every line within the width where it can", func(t *testing.T) {
+		t.Parallel()
+
+		// A deep, wide tree whose lines must all fit once broken, except for
+		// atoms which are too long to break.
+		var elements []Node
+		for i := range 12 {
+			elements = append(elements, List{Elements: []Node{
+				Symbol{Value: strings.Repeat(string(rune('a'+i)), 12)},
+				Symbol{Value: strings.Repeat(string(rune('m'+i)), 12)},
+			}})
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, Print(&buf, &File{Nodes: []Node{List{Elements: elements}}}))
+
+		for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+			require.LessOrEqualf(t, len(line), MaxLineWidth, "line over width: %q", line)
+		}
+	})
 }
 
 // printAndReparse writes nodes out and reads them straight back, which is the
@@ -224,6 +446,12 @@ func valueOf(n Node) any {
 	}
 }
 
+// unknownNode is a Node the printer has no case for. The interface is sealed,
+// so only a test inside the package can produce one.
+type unknownNode struct{}
+
+func (unknownNode) sexpr() {}
+
 // errWriter fails every write.
 type errWriter struct{ err error }
 
@@ -306,14 +534,61 @@ func TestPrintErrors(t *testing.T) {
 		require.Equal(t, UnsupportedNodeError{Node: nil}, err)
 	})
 
-	t.Run("will reject a node it cannot yet write", func(t *testing.T) {
+	t.Run("will reject a node type it does not know", func(t *testing.T) {
 		t.Parallel()
 
-		// Lists arrive in a later story.
 		var buf bytes.Buffer
-		err := Print(&buf, &File{Nodes: []Node{List{}}})
+		err := Print(&buf, &File{Nodes: []Node{unknownNode{}}})
 
-		require.Equal(t, UnsupportedNodeError{Node: List{}}, err)
+		require.Equal(t, UnsupportedNodeError{Node: unknownNode{}}, err)
+	})
+
+	t.Run("will reject an unknown node nested in a list", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Nodes: []Node{List{Elements: []Node{unknownNode{}}}}})
+
+		require.Equal(t, UnsupportedNodeError{Node: unknownNode{}}, err)
+	})
+
+	t.Run("will reject a quote of an unknown kind", func(t *testing.T) {
+		t.Parallel()
+
+		bad := Quote{Kind: QuoteKind(99), Datum: Symbol{Value: "x"}}
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Nodes: []Node{bad}})
+
+		require.Equal(t, UnsupportedNodeError{Node: bad}, err)
+	})
+
+	t.Run("will reject a non-finite float nested in a list", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Nodes: []Node{List{Elements: []Node{
+			Symbol{Value: "a"},
+			Float{Value: math.Inf(1)},
+		}}}})
+
+		require.IsType(t, NonFiniteFloatError{}, err)
+	})
+
+	t.Run("will reject an AST nested past the depth limit", func(t *testing.T) {
+		t.Parallel()
+
+		// Parse cannot build this, but a caller assembling an AST by hand can,
+		// and unbounded recursion here would take the process down.
+		node := Node(Symbol{Value: "x"})
+		for range MaxDepth + 2 {
+			node = List{Elements: []Node{node}}
+		}
+
+		var buf bytes.Buffer
+		err := Print(&buf, &File{Nodes: []Node{node}})
+
+		require.IsType(t, MaxDepthExceededError{}, err)
 	})
 
 	t.Run("will reject a non-finite float", func(t *testing.T) {
@@ -340,7 +615,7 @@ func TestPrinterErrorMessages(t *testing.T) {
 	t.Run("will describe an unsupported node", func(t *testing.T) {
 		t.Parallel()
 
-		require.Equal(t, "cannot print a node of type sexpr.List", UnsupportedNodeError{Node: List{}}.Error())
+		require.Equal(t, "cannot print a node of type sexpr.unknownNode", UnsupportedNodeError{Node: unknownNode{}}.Error())
 	})
 
 	t.Run("will describe a non-finite float", func(t *testing.T) {

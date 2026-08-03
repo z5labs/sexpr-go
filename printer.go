@@ -16,6 +16,11 @@ import (
 	"unicode/utf8"
 )
 
+// MaxLineWidth is the column past which [Print] breaks a list across lines.
+//
+// Width is counted in bytes, matching how [Pos] counts columns.
+const MaxLineWidth = 80
+
 // ErrNilFile is returned by [Print] when given a nil [File].
 var ErrNilFile = errors.New("cannot print a nil file")
 
@@ -110,51 +115,189 @@ func printNodes(idx int) printerAction {
 		if idx >= len(f.Nodes) {
 			return nil
 		}
-		return printNode(f.Nodes[idx], writeThen("\n", printNodes(idx+1)))
+		return printNode(f.Nodes[idx], 0, writeThen("\n", printNodes(idx+1)))
 	}
 }
 
-// printNode writes a single node and continues with the next action.
-func printNode(n Node, next printerAction) printerAction {
+// printNode writes a single node at the given indent and continues with the
+// next action.
+func printNode(n Node, indent int, next printerAction) printerAction {
 	return func(pr *printer, f *File) printerAction {
-		switch node := n.(type) {
-		case Symbol:
-			pr.write(node.Value)
-		case String:
-			pr.write(quoteString(node.Value))
-		case Int:
-			pr.write(strconv.FormatInt(node.Value, 10))
-		case Float:
-			return printFloat(node, next)
-		case Bool:
-			if node.Value {
-				pr.write("#t")
-			} else {
-				pr.write("#f")
-			}
-		case Nil:
-			pr.write("nil")
-		default:
-			// Lists and quote forms are printed in a later story, and a nil node
-			// lands here too.
-			pr.fail(UnsupportedNodeError{Node: n})
+		pr.writeNode(n, indent, 0)
+		if pr.err != nil {
 			return nil
 		}
-
 		return next
 	}
 }
 
-func printFloat(node Float, next printerAction) printerAction {
-	return func(pr *printer, f *File) printerAction {
+// writeNode writes n starting at column indent, breaking it across lines when
+// its single line form would run past [MaxLineWidth].
+//
+// depth bounds the recursion the same way the parser does, since a hand built
+// AST can nest arbitrarily deep even though a parsed one cannot.
+func (pr *printer) writeNode(n Node, indent, depth int) {
+	if pr.err != nil {
+		return
+	}
+	if depth > MaxDepth {
+		pr.fail(MaxDepthExceededError{Pos: posOf(n), Depth: MaxDepth})
+		return
+	}
+
+	line, err := renderInline(n, depth)
+	if err != nil {
+		pr.fail(err)
+		return
+	}
+
+	if indent+len(line) <= MaxLineWidth {
+		pr.write(line)
+		return
+	}
+
+	// Only a list has anywhere to break; a quote breaks whatever it applies to.
+	switch node := n.(type) {
+	case List:
+		pr.writeWrappedList(node, indent, depth)
+	case Quote:
+		macro := quoteMacros[node.Kind]
+		pr.write(macro)
+		pr.writeNode(node.Datum, indent+len(macro), depth+1)
+	default:
+		// An atom cannot be broken, so an over-long one simply runs on.
+		pr.write(line)
+	}
+}
+
+// writeWrappedList writes a list one element per line, each indented two spaces
+// past the opening parenthesis so that the elements sit under the head.
+func (pr *printer) writeWrappedList(list List, indent, depth int) {
+	pr.write("(")
+
+	// Two past the '(' column, which nesting then compounds.
+	inner := indent + 2
+	pad := "\n" + strings.Repeat(" ", inner)
+
+	for i, element := range list.Elements {
+		if i == 0 {
+			// The head stays on the opening line, just after the parenthesis.
+			pr.writeNode(element, indent+1, depth+1)
+			continue
+		}
+		pr.write(pad)
+		pr.writeNode(element, inner, depth+1)
+	}
+
+	if list.Tail != nil {
+		pr.write(pad)
+		pr.write(". ")
+		pr.writeNode(list.Tail, inner+2, depth+1)
+	}
+
+	pr.write(")")
+}
+
+// quoteMacros maps a quote kind back to the shorthand it was written with, so
+// that printing reproduces the sugar rather than expanding it.
+var quoteMacros = map[QuoteKind]string{
+	QuoteKindQuote:           "'",
+	QuoteKindQuasiquote:      "`",
+	QuoteKindUnquote:         ",",
+	QuoteKindUnquoteSplicing: ",@",
+}
+
+// posOf reports where a node came from, for errors which need a position.
+func posOf(n Node) Pos {
+	switch node := n.(type) {
+	case Symbol:
+		return node.Pos
+	case String:
+		return node.Pos
+	case Int:
+		return node.Pos
+	case Float:
+		return node.Pos
+	case Bool:
+		return node.Pos
+	case Nil:
+		return node.Pos
+	case List:
+		return node.Pos
+	case Quote:
+		return node.Pos
+	default:
+		return Pos{}
+	}
+}
+
+// renderInline renders n on a single line.
+func renderInline(n Node, depth int) (string, error) {
+	var out strings.Builder
+	if err := writeInline(&out, n, depth); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+func writeInline(out *strings.Builder, n Node, depth int) error {
+	if depth > MaxDepth {
+		return MaxDepthExceededError{Pos: posOf(n), Depth: MaxDepth}
+	}
+
+	switch node := n.(type) {
+	case Symbol:
+		out.WriteString(node.Value)
+	case String:
+		out.WriteString(quoteString(node.Value))
+	case Int:
+		out.WriteString(strconv.FormatInt(node.Value, 10))
+	case Float:
 		if math.IsInf(node.Value, 0) || math.IsNaN(node.Value) {
-			pr.fail(NonFiniteFloatError{Value: node.Value})
-			return nil
+			return NonFiniteFloatError{Value: node.Value}
 		}
-
-		pr.write(formatFloat(node.Value))
-		return next
+		out.WriteString(formatFloat(node.Value))
+	case Bool:
+		if node.Value {
+			out.WriteString("#t")
+		} else {
+			out.WriteString("#f")
+		}
+	case Nil:
+		out.WriteString("nil")
+	case List:
+		out.WriteByte('(')
+		for i, element := range node.Elements {
+			if i > 0 {
+				out.WriteByte(' ')
+			}
+			if err := writeInline(out, element, depth+1); err != nil {
+				return err
+			}
+		}
+		if node.Tail != nil {
+			if len(node.Elements) > 0 {
+				out.WriteByte(' ')
+			}
+			out.WriteString(". ")
+			if err := writeInline(out, node.Tail, depth+1); err != nil {
+				return err
+			}
+		}
+		out.WriteByte(')')
+	case Quote:
+		macro, ok := quoteMacros[node.Kind]
+		if !ok {
+			return UnsupportedNodeError{Node: n}
+		}
+		out.WriteString(macro)
+		return writeInline(out, node.Datum, depth+1)
+	default:
+		// A nil node lands here too.
+		return UnsupportedNodeError{Node: n}
 	}
+
+	return nil
 }
 
 // formatFloat renders v so that reading it back yields the same [Float].
