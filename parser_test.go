@@ -1,0 +1,599 @@
+// Copyright (c) 2026 Z5Labs and Contributors
+//
+// This software is released under the MIT License.
+// https://opensource.org/licenses/MIT
+
+package sexpr
+
+import (
+	"iter"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func newTestParser(src string) (*parser, func()) {
+	next, stop := iter.Pull2(Tokenize(strings.NewReader(src)))
+	return &parser{next: next, pos: Pos{Line: 1, Column: 1}}, stop
+}
+
+func TestParse(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		src      string
+		expected []Node
+	}{
+		{
+			name:     "empty input",
+			src:      ``,
+			expected: nil,
+		},
+		{
+			name:     "input of only whitespace",
+			src:      "  \n\t ",
+			expected: nil,
+		},
+		{
+			name: "a symbol",
+			src:  `add`,
+			expected: []Node{
+				Symbol{Pos: Pos{Line: 1, Column: 1}, Value: "add"},
+			},
+		},
+		{
+			name: "a symbol of punctuation",
+			src:  `->list`,
+			expected: []Node{
+				Symbol{Pos: Pos{Line: 1, Column: 1}, Value: "->list"},
+			},
+		},
+		{
+			name: "nil is its own node",
+			src:  `nil`,
+			expected: []Node{
+				Nil{Pos: Pos{Line: 1, Column: 1}},
+			},
+		},
+		{
+			name: "a symbol which merely contains nil",
+			src:  `nil?`,
+			expected: []Node{
+				Symbol{Pos: Pos{Line: 1, Column: 1}, Value: "nil?"},
+			},
+		},
+		{
+			name: "a string literal",
+			src:  `"hello"`,
+			expected: []Node{
+				String{Pos: Pos{Line: 1, Column: 1}, Value: "hello"},
+			},
+		},
+		{
+			name: "an empty string literal",
+			src:  `""`,
+			expected: []Node{
+				String{Pos: Pos{Line: 1, Column: 1}, Value: ""},
+			},
+		},
+		{
+			name: "integers",
+			src:  `0 42 -1 +42`,
+			expected: []Node{
+				Int{Pos: Pos{Line: 1, Column: 1}, Value: 0},
+				Int{Pos: Pos{Line: 1, Column: 3}, Value: 42},
+				Int{Pos: Pos{Line: 1, Column: 6}, Value: -1},
+				Int{Pos: Pos{Line: 1, Column: 9}, Value: 42},
+			},
+		},
+		{
+			name: "the integer bounds",
+			src:  `9223372036854775807 -9223372036854775808`,
+			expected: []Node{
+				Int{Pos: Pos{Line: 1, Column: 1}, Value: 9223372036854775807},
+				Int{Pos: Pos{Line: 1, Column: 21}, Value: -9223372036854775808},
+			},
+		},
+		{
+			name: "floats",
+			src:  `1.5 -0.5 .5`,
+			expected: []Node{
+				Float{Pos: Pos{Line: 1, Column: 1}, Value: 1.5},
+				Float{Pos: Pos{Line: 1, Column: 5}, Value: -0.5},
+				Float{Pos: Pos{Line: 1, Column: 10}, Value: 0.5},
+			},
+		},
+		{
+			name: "floats with exponents",
+			src:  `1e10 1.5e-3 1E+2`,
+			expected: []Node{
+				Float{Pos: Pos{Line: 1, Column: 1}, Value: 1e10},
+				Float{Pos: Pos{Line: 1, Column: 6}, Value: 1.5e-3},
+				Float{Pos: Pos{Line: 1, Column: 13}, Value: 100},
+			},
+		},
+		{
+			name: "booleans",
+			src:  `#t #true #f #false`,
+			expected: []Node{
+				Bool{Pos: Pos{Line: 1, Column: 1}, Value: true},
+				Bool{Pos: Pos{Line: 1, Column: 4}, Value: true},
+				Bool{Pos: Pos{Line: 1, Column: 10}, Value: false},
+				Bool{Pos: Pos{Line: 1, Column: 13}, Value: false},
+			},
+		},
+		{
+			name: "several top level datums of mixed kinds",
+			src:  `a 1 1.5 "s" #t nil`,
+			expected: []Node{
+				Symbol{Pos: Pos{Line: 1, Column: 1}, Value: "a"},
+				Int{Pos: Pos{Line: 1, Column: 3}, Value: 1},
+				Float{Pos: Pos{Line: 1, Column: 5}, Value: 1.5},
+				String{Pos: Pos{Line: 1, Column: 9}, Value: "s"},
+				Bool{Pos: Pos{Line: 1, Column: 13}, Value: true},
+				Nil{Pos: Pos{Line: 1, Column: 16}},
+			},
+		},
+		{
+			name: "datums across several lines",
+			src: `a
+  1
+  #f`,
+			expected: []Node{
+				Symbol{Pos: Pos{Line: 1, Column: 1}, Value: "a"},
+				Int{Pos: Pos{Line: 2, Column: 3}, Value: 1},
+				Bool{Pos: Pos{Line: 3, Column: 3}, Value: false},
+			},
+		},
+		{
+			name: "line comments are skipped",
+			src: `; leading
+a ; trailing
+b`,
+			expected: []Node{
+				Symbol{Pos: Pos{Line: 2, Column: 1}, Value: "a"},
+				Symbol{Pos: Pos{Line: 3, Column: 1}, Value: "b"},
+			},
+		},
+		{
+			name: "block comments are skipped",
+			src:  `#| c |# a #| d |# b`,
+			expected: []Node{
+				Symbol{Pos: Pos{Line: 1, Column: 9}, Value: "a"},
+				Symbol{Pos: Pos{Line: 1, Column: 19}, Value: "b"},
+			},
+		},
+		{
+			name:     "a file of only comments",
+			src:      `; nothing but a comment`,
+			expected: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+
+			require.NoError(t, err)
+			require.NotNil(t, file)
+			require.Equal(t, tc.expected, file.Nodes)
+		})
+	}
+}
+
+func TestParseStringEscapes(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		src      string
+		expected string
+	}{
+		{name: "escaped quote", src: `"a\"b"`, expected: "a\"b"},
+		{name: "escaped backslash", src: `"a\\b"`, expected: "a\\b"},
+		{name: "newline", src: `"a\nb"`, expected: "a\nb"},
+		{name: "carriage return", src: `"a\rb"`, expected: "a\rb"},
+		{name: "tab", src: `"a\tb"`, expected: "a\tb"},
+		{name: "backspace", src: `"a\bb"`, expected: "a\bb"},
+		{name: "form feed", src: `"a\fb"`, expected: "a\fb"},
+		{name: "several escapes in one literal", src: `"\t\n\\"`, expected: "\t\n\\"},
+		{name: "a literal newline is kept", src: "\"a\nb\"", expected: "a\nb"},
+		{name: "non-ASCII text passes through", src: `"héllo"`, expected: "héllo"},
+		{name: "unicode escape", src: `"\u00e9"`, expected: "é"},
+		{name: "unicode escape with uppercase hex", src: `"\uABCD"`, expected: "ꯍ"},
+		{name: "unicode escape of an ASCII character", src: `"\u0041"`, expected: "A"},
+		{name: "unicode escape beside other escapes", src: `"\n\u00e9\t"`, expected: "\né\t"},
+		{name: "the largest unicode escape", src: `"\uFFFF"`, expected: "\uFFFF"},
+		{name: "the smallest unicode escape", src: `"\u0000"`, expected: "\u0000"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+
+			require.NoError(t, err)
+			require.Len(t, file.Nodes, 1)
+			require.Equal(t, String{Pos: Pos{Line: 1, Column: 1}, Value: tc.expected}, file.Nodes[0])
+		})
+	}
+}
+
+func TestParseErrors(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		src         string
+		expectedErr error
+	}{
+		{
+			name: "integer above the int64 range",
+			src:  `9223372036854775808`,
+			expectedErr: NumberRangeError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "9223372036854775808",
+			},
+		},
+		{
+			name: "integer below the int64 range",
+			src:  `-9223372036854775809`,
+			expectedErr: NumberRangeError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "-9223372036854775809",
+			},
+		},
+		{
+			name: "float above the float64 range",
+			src:  `1e400`,
+			expectedErr: NumberRangeError{
+				Pos:   Pos{Line: 1, Column: 1},
+				Value: "1e400",
+			},
+		},
+		{
+			name: "out of range number reports its own position",
+			src: `1
+  99999999999999999999`,
+			expectedErr: NumberRangeError{
+				Pos:   Pos{Line: 2, Column: 3},
+				Value: "99999999999999999999",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+
+			require.Equal(t, tc.expectedErr, err)
+			require.Nil(t, file)
+		})
+	}
+}
+
+func TestParseRejectsTokensWithoutADatum(t *testing.T) {
+	t.Parallel()
+
+	// Lists, dotted pairs, and quote forms arrive in later stories, so for now
+	// their tokens have no datum to build.
+	testCases := []struct {
+		name string
+		src  string
+		tok  Token
+	}{
+		{
+			name: "an opening parenthesis",
+			src:  `(a)`,
+			tok:  Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+		},
+		{
+			name: "a closing parenthesis",
+			src:  `)`,
+			tok:  Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenRParen, Value: []byte(")")},
+		},
+		{
+			name: "a dotted pair marker",
+			src:  `.`,
+			tok:  Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenDot, Value: []byte(".")},
+		},
+		{
+			name: "a reader macro",
+			src:  `'a`,
+			tok:  Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenQuote, Value: []byte("'")},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := Parse(strings.NewReader(tc.src))
+
+			require.Equal(t, UnexpectedTokenError{Expected: datumTokens, Actual: tc.tok}, err)
+		})
+	}
+}
+
+func TestParsePropagatesTokenizerErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will return the tokenizer's error unchanged", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := Parse(strings.NewReader(`a ]`))
+
+		require.Equal(t, UnexpectedCharacterError{Pos: Pos{Line: 1, Column: 3}, R: ']'}, err)
+		require.Nil(t, file)
+	})
+
+	t.Run("will return a malformed number error from the tokenizer", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := Parse(strings.NewReader(`1.2.3`))
+
+		require.Equal(t, InvalidNumberError{Pos: Pos{Line: 1, Column: 1}, Value: "1.2.3"}, err)
+	})
+}
+
+func TestParserPrimitives(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will read tokens in order", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`a b`)
+		defer stop()
+
+		tok, err, ok := p.read()
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, []byte("a"), tok.Value)
+
+		tok, err, ok = p.read()
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, []byte("b"), tok.Value)
+
+		_, err, ok = p.read()
+		require.NoError(t, err)
+		require.False(t, ok)
+	})
+
+	t.Run("will peek without consuming", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`a b`)
+		defer stop()
+
+		peeked, err, ok := p.peek()
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, []byte("a"), peeked.Value)
+
+		// Peeking again returns the same token.
+		again, _, _ := p.peek()
+		require.Equal(t, peeked, again)
+
+		read, _, _ := p.read()
+		require.Equal(t, peeked, read)
+
+		next, _, _ := p.read()
+		require.Equal(t, []byte("b"), next.Value)
+	})
+
+	t.Run("will peek past the end of input", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(``)
+		defer stop()
+
+		_, err, ok := p.peek()
+		require.NoError(t, err)
+		require.False(t, ok)
+	})
+
+	t.Run("will hand back an unread token", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`a b`)
+		defer stop()
+
+		first, _, _ := p.read()
+		p.unread(first)
+
+		again, err, ok := p.read()
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, first, again)
+
+		next, _, _ := p.read()
+		require.Equal(t, []byte("b"), next.Value)
+	})
+
+	t.Run("will skip comments", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser("; one\na #| two |# b")
+		defer stop()
+
+		first, _, _ := p.read()
+		require.Equal(t, TokenSymbol, first.Type)
+		require.Equal(t, []byte("a"), first.Value)
+
+		second, _, _ := p.read()
+		require.Equal(t, TokenSymbol, second.Type)
+		require.Equal(t, []byte("b"), second.Value)
+	})
+
+	t.Run("will accept an expected token type", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`a`)
+		defer stop()
+
+		tok, err := p.expect(TokenSymbol, TokenNumber)
+		require.NoError(t, err)
+		require.Equal(t, []byte("a"), tok.Value)
+	})
+
+	t.Run("will reject an unexpected token type", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`(`)
+		defer stop()
+
+		_, err := p.expect(TokenSymbol, TokenNumber)
+		require.Equal(t, UnexpectedTokenError{
+			Expected: []TokenType{TokenSymbol, TokenNumber},
+			Actual:   Token{Pos: Pos{Line: 1, Column: 1}, Type: TokenLParen, Value: []byte("(")},
+		}, err)
+	})
+
+	t.Run("will report the end of tokens with the last position seen", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`a`)
+		defer stop()
+
+		_, err := p.expect(TokenSymbol)
+		require.NoError(t, err)
+
+		_, err = p.expect(TokenSymbol)
+		require.Equal(t, UnexpectedEndOfTokensError{
+			Expected: []TokenType{TokenSymbol},
+			Pos:      Pos{Line: 1, Column: 1},
+		}, err)
+	})
+
+	t.Run("will surface a tokenizer error from expect", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`]`)
+		defer stop()
+
+		_, err := p.expect(TokenSymbol)
+		require.Equal(t, UnexpectedCharacterError{Pos: Pos{Line: 1, Column: 1}, R: ']'}, err)
+	})
+}
+
+func TestParserErrorMessages(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will describe an unexpected token", func(t *testing.T) {
+		t.Parallel()
+
+		err := UnexpectedTokenError{
+			Expected: []TokenType{TokenSymbol, TokenNumber},
+			Actual:   Token{Pos: Pos{Line: 2, Column: 5}, Type: TokenLParen, Value: []byte("(")},
+		}
+
+		require.Equal(t, "unexpected token at line 2, column 5: LParen((), expected one of: Symbol, Number", err.Error())
+	})
+
+	t.Run("will describe the end of tokens", func(t *testing.T) {
+		t.Parallel()
+
+		err := UnexpectedEndOfTokensError{
+			Expected: []TokenType{TokenRParen},
+			Pos:      Pos{Line: 3, Column: 7},
+		}
+
+		require.Equal(t, "unexpected end of tokens at line 3, column 7, expected one of: RParen", err.Error())
+	})
+
+	t.Run("will describe a number out of range", func(t *testing.T) {
+		t.Parallel()
+
+		err := NumberRangeError{Pos: Pos{Line: 1, Column: 4}, Value: "1e400"}
+
+		require.Equal(t, `number literal "1e400" out of range at line 1, column 4`, err.Error())
+	})
+}
+
+// Every atom node type implements Node. These fail to compile rather than
+// fail at run time if one stops satisfying the interface.
+var (
+	_ Node = Symbol{}
+	_ Node = String{}
+	_ Node = Int{}
+	_ Node = Float{}
+	_ Node = Bool{}
+	_ Node = Nil{}
+)
+
+func TestNumberError(t *testing.T) {
+	t.Parallel()
+
+	// Only the range branch is reachable through Parse, since the tokenizer
+	// rejects malformed lexemes before the parser sees them. Both are covered
+	// here so the distinction does not rot.
+	t.Run("will report a value which does not fit its type as out of range", func(t *testing.T) {
+		t.Parallel()
+
+		_, parseErr := strconv.ParseInt("9223372036854775808", 10, 64)
+		err := numberError(Pos{Line: 1, Column: 1}, "9223372036854775808", parseErr)
+
+		require.Equal(t, NumberRangeError{Pos: Pos{Line: 1, Column: 1}, Value: "9223372036854775808"}, err)
+	})
+
+	t.Run("will report a value which is not a number as malformed", func(t *testing.T) {
+		t.Parallel()
+
+		_, parseErr := strconv.ParseInt("abc", 10, 64)
+		err := numberError(Pos{Line: 2, Column: 4}, "abc", parseErr)
+
+		require.Equal(t, InvalidNumberError{Pos: Pos{Line: 2, Column: 4}, Value: "abc"}, err)
+	})
+}
+
+func TestDecodeStringRejectsBadInput(t *testing.T) {
+	t.Parallel()
+
+	// The tokenizer validates escapes, so these are defensive paths which
+	// Parse cannot reach. They are exercised directly to keep them honest.
+	testCases := []struct {
+		name        string
+		raw         string
+		expectedErr error
+	}{
+		{
+			name:        "a trailing backslash",
+			raw:         `a\`,
+			expectedErr: InvalidEscapeError{Pos: Pos{Line: 1, Column: 1}, R: '\\'},
+		},
+		{
+			name:        "an unrecognized escape",
+			raw:         `a\q`,
+			expectedErr: InvalidEscapeError{Pos: Pos{Line: 1, Column: 1}, R: 'q'},
+		},
+		{
+			name:        "a truncated unicode escape",
+			raw:         `a\u00`,
+			expectedErr: InvalidEscapeError{Pos: Pos{Line: 1, Column: 1}, R: 'u'},
+		},
+		{
+			name:        "a unicode escape with non-hex digits",
+			raw:         `a\uZZZZ`,
+			expectedErr: InvalidEscapeError{Pos: Pos{Line: 1, Column: 1}, R: 'u'},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := decodeString(Pos{Line: 1, Column: 1}, []byte(tc.raw))
+
+			require.Equal(t, tc.expectedErr, err)
+		})
+	}
+}

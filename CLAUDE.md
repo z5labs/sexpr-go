@@ -324,6 +324,29 @@ func parseList(p *parser, f *File) (_ parserAction[*File], err error) {
 }
 ```
 
+### Atom Decoding Belongs to the Parser
+
+The tokenizer keeps source text; the parser turns it into values. Three
+conversions live in `parseDatum` and nowhere else:
+
+- **Strings** — `decodeString` resolves the escapes the tokenizer left raw.
+- **Numbers** — the lexeme becomes an `Int` or a `Float` depending on whether
+  it carries a fraction or exponent. A value which does not fit reports
+  `NumberRangeError`; `InvalidNumberError` is kept for a lexeme which is not a
+  number at all, which the tokenizer already rejects.
+- **`nil`** — spelled like a symbol, so the tokenizer emits `TokenSymbol` and
+  the parser is what turns it into a `Nil` node.
+
+Because the tokenizer validates first, the malformed-input branches in these
+conversions are unreachable through `Parse`. They are still implemented and
+tested directly rather than left to panic.
+
+### Comments Never Reach a Parse Action
+
+`parser.advance` drops `TokenComment` so that every parse action sees only
+tokens which carry a datum. Collecting comments into `File.Comments` happens
+there too.
+
 ### Sealed Node Interface
 
 `Node` is sealed by an unexported method so that only this package can implement it:
