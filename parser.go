@@ -391,7 +391,9 @@ func decodeString(pos Pos, raw []byte) (string, error) {
 			if i+4 > len(raw) {
 				return "", InvalidEscapeError{Pos: pos, R: 'u'}
 			}
-			code, err := strconv.ParseUint(string(raw[i:i+4]), 16, 32)
+			// Four hex digits never exceed 0xFFFF, so a 16 bit parse states the
+			// real bound and keeps the conversion to rune, an int32, in range.
+			code, err := strconv.ParseUint(string(raw[i:i+4]), 16, 16)
 			if err != nil {
 				return "", InvalidEscapeError{Pos: pos, R: 'u'}
 			}

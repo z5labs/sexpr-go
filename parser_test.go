@@ -208,6 +208,8 @@ func TestParseStringEscapes(t *testing.T) {
 		{name: "unicode escape with uppercase hex", src: `"\uABCD"`, expected: "ꯍ"},
 		{name: "unicode escape of an ASCII character", src: `"\u0041"`, expected: "A"},
 		{name: "unicode escape beside other escapes", src: `"\n\u00e9\t"`, expected: "\né\t"},
+		{name: "the largest unicode escape", src: `"\uFFFF"`, expected: "\uFFFF"},
+		{name: "the smallest unicode escape", src: `"\u0000"`, expected: "\u0000"},
 	}
 
 	for _, tc := range testCases {
