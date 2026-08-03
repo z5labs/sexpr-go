@@ -555,8 +555,9 @@ var (
 	blockCommentClose = []rune{'|', '#'}
 )
 
-// tokenizeHash dispatches on the character following a '#'. Only block comments
-// are recognised for now; the remaining hash forms land in a later story.
+// tokenizeHash dispatches on the character following a '#': '|' opens a block
+// comment and 't' or 'f' begins a boolean. Any other character, including none
+// at all, is rejected. A new '#' form means a new case here.
 func tokenizeHash(pos Pos) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		spellingPos := t.pos
@@ -583,8 +584,9 @@ func tokenizeHash(pos Pos) tokenizerAction {
 }
 
 // boolSpellings are the accepted spellings of a boolean literal after its '#',
-// ordered longest first so that the longest valid prefix is found.
-var boolSpellings = []string{"true", "false", "t", "f"}
+// ordered longest first so that [boolPrefixLen] finds the longest valid prefix
+// rather than stopping at a shorter one which also matches.
+var boolSpellings = []string{"false", "true", "t", "f"}
 
 // boolPrefixLen returns the length of the longest accepted spelling which s
 // begins with, or zero if it begins with none of them. Anything beyond that
