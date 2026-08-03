@@ -271,6 +271,107 @@ b`,
 				}},
 			},
 		},
+		{
+			name: "a dotted pair",
+			src:  `(a . b)`,
+			expected: []Node{
+				List{
+					Pos:      Pos{Line: 1, Column: 1},
+					Elements: []Node{Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"}},
+					Tail:     Symbol{Pos: Pos{Line: 1, Column: 6}, Value: "b"},
+				},
+			},
+		},
+		{
+			name: "an improper list of several elements",
+			src:  `(a b . c)`,
+			expected: []Node{
+				List{
+					Pos: Pos{Line: 1, Column: 1},
+					Elements: []Node{
+						Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+						Symbol{Pos: Pos{Line: 1, Column: 4}, Value: "b"},
+					},
+					Tail: Symbol{Pos: Pos{Line: 1, Column: 8}, Value: "c"},
+				},
+			},
+		},
+		{
+			name: "a dotted pair of atoms of different kinds",
+			src:  `(1 . "s")`,
+			expected: []Node{
+				List{
+					Pos:      Pos{Line: 1, Column: 1},
+					Elements: []Node{Int{Pos: Pos{Line: 1, Column: 2}, Value: 1}},
+					Tail:     String{Pos: Pos{Line: 1, Column: 6}, Value: "s"},
+				},
+			},
+		},
+		{
+			name: "a list as the tail",
+			src:  `(a . (b c))`,
+			expected: []Node{
+				List{
+					Pos:      Pos{Line: 1, Column: 1},
+					Elements: []Node{Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"}},
+					Tail: List{Pos: Pos{Line: 1, Column: 6}, Elements: []Node{
+						Symbol{Pos: Pos{Line: 1, Column: 7}, Value: "b"},
+						Symbol{Pos: Pos{Line: 1, Column: 9}, Value: "c"},
+					}},
+				},
+			},
+		},
+		{
+			name: "nil as the tail",
+			src:  `(a . nil)`,
+			expected: []Node{
+				List{
+					Pos:      Pos{Line: 1, Column: 1},
+					Elements: []Node{Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"}},
+					Tail:     Nil{Pos: Pos{Line: 1, Column: 6}},
+				},
+			},
+		},
+		{
+			name: "a dotted pair nested in another",
+			src:  `((a . b) . c)`,
+			expected: []Node{
+				List{
+					Pos: Pos{Line: 1, Column: 1},
+					Elements: []Node{
+						List{
+							Pos:      Pos{Line: 1, Column: 2},
+							Elements: []Node{Symbol{Pos: Pos{Line: 1, Column: 3}, Value: "a"}},
+							Tail:     Symbol{Pos: Pos{Line: 1, Column: 7}, Value: "b"},
+						},
+					},
+					Tail: Symbol{Pos: Pos{Line: 1, Column: 12}, Value: "c"},
+				},
+			},
+		},
+		{
+			name: "a proper list leaves the tail unset",
+			src:  `(a b)`,
+			expected: []Node{
+				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
+					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+					Symbol{Pos: Pos{Line: 1, Column: 4}, Value: "b"},
+				}, Tail: nil},
+			},
+		},
+		{
+			name: "a dotted pair spanning lines",
+			src: `(a
+  .
+  b)`,
+			expected: []Node{
+				List{
+					Pos:      Pos{Line: 1, Column: 1},
+					Elements: []Node{Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"}},
+					Tail:     Symbol{Pos: Pos{Line: 3, Column: 3}, Value: "b"},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -459,6 +560,116 @@ func TestParseUnbalancedLists(t *testing.T) {
 	}
 }
 
+func TestParseMalformedDottedPairs(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		src         string
+		expectedErr error
+	}{
+		{
+			name: "a dot with nothing before it",
+			src:  `(. a)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 2}, Type: TokenDot, Value: []byte(".")},
+			},
+		},
+		{
+			name: "a dot with nothing after it",
+			src:  `(a . )`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 6}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "a dot immediately before the closing parenthesis",
+			src:  `(a .)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 5}, Type: TokenRParen, Value: []byte(")")},
+			},
+		},
+		{
+			name: "more than one datum after the dot",
+			src:  `(a . b c)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: []TokenType{TokenRParen},
+				Actual:   Token{Pos: Pos{Line: 1, Column: 8}, Type: TokenSymbol, Value: []byte("c")},
+			},
+		},
+		{
+			name: "two dots in one list",
+			src:  `(a . b . c)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: []TokenType{TokenRParen},
+				Actual:   Token{Pos: Pos{Line: 1, Column: 8}, Type: TokenDot, Value: []byte(".")},
+			},
+		},
+		{
+			name: "a lone dot in a list",
+			src:  `(.)`,
+			expectedErr: UnexpectedTokenError{
+				Expected: datumTokens,
+				Actual:   Token{Pos: Pos{Line: 1, Column: 2}, Type: TokenDot, Value: []byte(".")},
+			},
+		},
+		{
+			name: "input ending after the dot",
+			src:  `(a .`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: datumTokens,
+				Pos:      Pos{Line: 1, Column: 4},
+			},
+		},
+		{
+			name: "input ending after the tail",
+			src:  `(a . b`,
+			expectedErr: UnexpectedEndOfTokensError{
+				Expected: []TokenType{TokenRParen},
+				Pos:      Pos{Line: 1, Column: 6},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+
+			require.Equal(t, tc.expectedErr, err)
+			require.Nil(t, file)
+		})
+	}
+}
+
+func TestParseDottedPairDepth(t *testing.T) {
+	t.Parallel()
+
+	// A tail sits inside the list which holds it, so it must count against the
+	// same depth budget as an element. Nesting through tails alone would
+	// otherwise escape the bound entirely.
+	t.Run("will count nesting reached through a tail", func(t *testing.T) {
+		t.Parallel()
+
+		var src strings.Builder
+		for range MaxDepth + 1 {
+			src.WriteString("(a . ")
+		}
+		src.WriteString("x")
+		for range MaxDepth + 1 {
+			src.WriteString(")")
+		}
+
+		_, err := Parse(strings.NewReader(src.String()))
+
+		require.IsType(t, MaxDepthExceededError{}, err)
+	})
+}
+
 // nest builds input nested depth levels deep around the given body.
 func nest(depth int, body string) string {
 	return strings.Repeat("(", depth) + body + strings.Repeat(")", depth)
@@ -534,9 +745,9 @@ func TestMaxDepthExceededError(t *testing.T) {
 func TestParseRejectsTokensWithoutADatum(t *testing.T) {
 	t.Parallel()
 
-	// A closing parenthesis only ever appears while a list is being read, and
-	// dotted pairs and quote forms arrive in later stories, so none of these
-	// tokens can begin a datum yet.
+	// A closing parenthesis and a dot only ever appear while a list is being
+	// read, so neither can begin a datum, and quote forms arrive in a later
+	// story.
 	testCases := []struct {
 		name string
 		src  string
