@@ -124,7 +124,7 @@ func tokenizeSexpr(t *tokenizer, yield func(Token, error) bool) tokenizerAction 
                         return tokenizeLineComment(pos)
                     case r == '"':
                         return tokenizeString(pos)
-                    case isSymbolStart(r):
+                    case isSymbolRune(r):
                         return tokenizeSymbol(pos)
                     // ... more cases
                     }
@@ -144,7 +144,8 @@ When a tokenizer needs to capture state (like the start position), return a clos
 ```go
 func tokenizeLineComment(pos Pos) tokenizerAction {
     return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
-        comment, err := t.copyUntil(func(r rune) bool { return r == '\n' })
+        var comment bytes.Buffer
+        err := t.copyIf(&comment, func(r rune) bool { return r != '\n' })
         return yieldErrorOr(
             err,
             yieldTokenThen(
@@ -155,6 +156,19 @@ func tokenizeLineComment(pos Pos) tokenizerAction {
     }
 }
 ```
+
+### Reader Helpers
+
+`copyIf(dst *bytes.Buffer, cond func(rune) bool) error` copies runes while
+`cond` holds and unreads the first one that fails it — use it for run-based
+lexemes such as symbols, line comments, and numbers.
+
+`copyUntil(dst *bytes.Buffer, delim []rune) error` copies runes until the
+delimiter sequence is consumed, writing everything before it — use it for
+terminated constructs such as block comments.
+
+Both return `io.ErrUnexpectedEOF` when the input ends, which `yieldErrorOr`
+treats as clean termination.
 
 ### Naming Note
 
