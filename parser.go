@@ -72,6 +72,15 @@ type Nil struct {
 
 func (Nil) sexpr() {}
 
+// List represents a parenthesized list. An empty list has no elements and is
+// distinct from [Nil].
+type List struct {
+	Pos      Pos
+	Elements []Node
+}
+
+func (List) sexpr() {}
+
 // Comment represents a comment in the source.
 type Comment struct {
 	Pos  Pos
@@ -83,6 +92,29 @@ type Comment struct {
 type File struct {
 	Nodes    []Node
 	Comments []*Comment
+}
+
+// MaxDepth is the deepest list nesting [Parse] accepts.
+//
+// Parsing is recursive descent, so nesting costs stack. Rather than let a
+// pathological input exhaust it, anything deeper than this fails with a
+// [MaxDepthExceededError].
+const MaxDepth = 10_000
+
+// MaxDepthExceededError is the error returned by the parser when the input nests deeper than [MaxDepth].
+type MaxDepthExceededError struct {
+	Pos   Pos
+	Depth int
+}
+
+// Error implements the [error] interface.
+func (e MaxDepthExceededError) Error() string {
+	return fmt.Sprintf(
+		"maximum nesting depth of %d exceeded at line %d, column %d",
+		e.Depth,
+		e.Pos.Line,
+		e.Pos.Column,
+	)
 }
 
 // UnexpectedEndOfTokensError is the error returned by the parser when it reaches the end of the tokens unexpectedly.
@@ -252,9 +284,9 @@ func (p *parser) unexpectedEndOfTokens(expected ...TokenType) UnexpectedEndOfTok
 
 type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 
-// datumTokens are the token types which may begin a datum. Lists, dotted pairs,
-// and quote forms extend this in later stories.
-var datumTokens = []TokenType{TokenSymbol, TokenString, TokenNumber, TokenBool}
+// datumTokens are the token types which may begin a datum. Dotted pairs and
+// quote forms extend this in later stories.
+var datumTokens = []TokenType{TokenLParen, TokenSymbol, TokenString, TokenNumber, TokenBool}
 
 func parseFile(p *parser, file *File) (parserAction[*File], error) {
 	tok, err, ok := p.read()
@@ -266,7 +298,7 @@ func parseFile(p *parser, file *File) (parserAction[*File], error) {
 		return nil, nil
 	}
 
-	node, err := parseDatum(tok)
+	node, err := p.parseDatum(tok, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -277,9 +309,43 @@ func parseFile(p *parser, file *File) (parserAction[*File], error) {
 	return parseFile, nil
 }
 
-// parseDatum turns a single token into its node.
-func parseDatum(tok Token) (Node, error) {
+// parseList reads the elements of a list up to its closing parenthesis. The
+// opening parenthesis at pos has already been consumed, and depth counts the
+// lists enclosing this one, including it.
+func (p *parser) parseList(pos Pos, depth int) (Node, error) {
+	if depth > MaxDepth {
+		return nil, MaxDepthExceededError{Pos: pos, Depth: MaxDepth}
+	}
+
+	list := List{Pos: pos}
+	for {
+		tok, err, ok := p.read()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			// The list was opened but never closed.
+			return nil, p.unexpectedEndOfTokens(TokenRParen)
+		}
+
+		if tok.Type == TokenRParen {
+			return list, nil
+		}
+
+		element, err := p.parseDatum(tok, depth)
+		if err != nil {
+			return nil, err
+		}
+		list.Elements = append(list.Elements, element)
+	}
+}
+
+// parseDatum turns tok, and any tokens belonging with it, into a node. depth
+// counts the lists enclosing tok.
+func (p *parser) parseDatum(tok Token, depth int) (Node, error) {
 	switch tok.Type {
+	case TokenLParen:
+		return p.parseList(tok.Pos, depth+1)
 	case TokenSymbol:
 		// nil is spelled like a symbol but denotes the empty value.
 		if string(tok.Value) == "nil" {
