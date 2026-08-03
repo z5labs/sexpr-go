@@ -357,6 +357,14 @@ since it sits inside that list. There is a test which nests exclusively through
 tails and expects the bound to still apply, so getting this wrong fails loudly
 rather than silently opening a way around the limit.
 
+Reader macros **do** increment the depth, even though `'''x` looks flat rather
+than nested. Each macro recurses into `parseDatum` for the datum it applies to,
+so a long run of them recurses exactly as a long run of `(` does. Passing the
+depth through unchanged there is not a wrong answer, it is a fatal stack
+overflow which takes the process down — verified by removing the increment and
+watching the runtime abort. Treat "does it recurse" rather than "does it look
+nested" as the test for whether a construct owes the budget a level.
+
 ### Comments Never Reach a Parse Action
 
 `parser.advance` drops `TokenComment` so that every parse action sees only
