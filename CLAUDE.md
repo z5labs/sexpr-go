@@ -213,6 +213,14 @@ if errors.Is(err, io.ErrUnexpectedEOF) {
 }
 ```
 
+### String Literals
+
+The tokenizer validates escape sequences but does not decode them. A
+`TokenString` value holds the source text between the quotes, with the quotes
+excluded and every escape left as written — `"a\nb"` yields the five characters
+`a\nb`, not a string containing a newline. Decoding into `String.Value` is the
+parser's job, which keeps the token faithful to the source for the printer.
+
 ### Naming Note
 
 In `avro-go/idl`, `TokenSymbol` means punctuation. Here "symbol" means the Lisp
