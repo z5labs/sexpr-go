@@ -261,14 +261,20 @@ b`,
 			},
 		},
 		{
-			name: "comments inside a list are skipped",
+			name: "comments inside a list are kept on the list",
 			src: `(a ; note
  b)`,
 			expected: []Node{
-				List{Pos: Pos{Line: 1, Column: 1}, Elements: []Node{
-					Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
-					Symbol{Pos: Pos{Line: 2, Column: 2}, Value: "b"},
-				}},
+				List{
+					Pos: Pos{Line: 1, Column: 1},
+					Elements: []Node{
+						Symbol{Pos: Pos{Line: 1, Column: 2}, Value: "a"},
+						Symbol{Pos: Pos{Line: 2, Column: 2}, Value: "b"},
+					},
+					Comments: []*Comment{
+						{Pos: Pos{Line: 1, Column: 4}, Text: "; note"},
+					},
+				},
 			},
 		},
 		{
@@ -783,6 +789,211 @@ func TestParseMalformedDottedPairs(t *testing.T) {
 	}
 }
 
+func TestParseComments(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		src           string
+		expectedNodes int
+		expectedFile  []*Comment
+		// expectedList, when set, is checked against the list parsed as the
+		// first top level node. Comments on more deeply nested lists are
+		// covered by TestParseCommentsAreScopedToTheirContainer.
+		expectedList []*Comment
+	}{
+		{
+			name:          "a file of only comments",
+			src:           "; one\n; two",
+			expectedNodes: 0,
+			expectedFile: []*Comment{
+				{Pos: Pos{Line: 1, Column: 1}, Text: "; one"},
+				{Pos: Pos{Line: 2, Column: 1}, Text: "; two"},
+			},
+		},
+		{
+			name:          "a file of only a block comment",
+			src:           `#| nothing else |#`,
+			expectedNodes: 0,
+			expectedFile: []*Comment{
+				{Pos: Pos{Line: 1, Column: 1}, Text: "#| nothing else |#"},
+			},
+		},
+		{
+			name:          "comments around a top level datum",
+			src:           "; lead\na ; trail",
+			expectedNodes: 1,
+			expectedFile: []*Comment{
+				{Pos: Pos{Line: 1, Column: 1}, Text: "; lead"},
+				{Pos: Pos{Line: 2, Column: 3}, Text: "; trail"},
+			},
+		},
+		{
+			name:          "both comment styles at the top level",
+			src:           `#| a |# x ; b`,
+			expectedNodes: 1,
+			expectedFile: []*Comment{
+				{Pos: Pos{Line: 1, Column: 1}, Text: "#| a |#"},
+				{Pos: Pos{Line: 1, Column: 11}, Text: "; b"},
+			},
+		},
+		{
+			name:          "comments inside a list stay on the list",
+			src:           "(; first\n a b ; last\n)",
+			expectedNodes: 1,
+			expectedFile:  nil,
+			expectedList: []*Comment{
+				{Pos: Pos{Line: 1, Column: 2}, Text: "; first"},
+				{Pos: Pos{Line: 2, Column: 6}, Text: "; last"},
+			},
+		},
+		{
+			name:          "a comment before a dotted pair tail",
+			src:           "(a . ; before\n b)",
+			expectedNodes: 1,
+			expectedFile:  nil,
+			expectedList: []*Comment{
+				{Pos: Pos{Line: 1, Column: 6}, Text: "; before"},
+			},
+		},
+		{
+			name:          "a comment between a macro and its datum",
+			src:           "' ; between\n x",
+			expectedNodes: 1,
+			expectedFile: []*Comment{
+				{Pos: Pos{Line: 1, Column: 3}, Text: "; between"},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := Parse(strings.NewReader(tc.src))
+
+			require.NoError(t, err)
+			require.Len(t, file.Nodes, tc.expectedNodes)
+			require.Equal(t, tc.expectedFile, file.Comments)
+
+			if tc.expectedList != nil {
+				list, ok := file.Nodes[0].(List)
+				require.Truef(t, ok, "expected a list, got %T", file.Nodes[0])
+				require.Equal(t, tc.expectedList, list.Comments)
+			}
+		})
+	}
+}
+
+func TestParseCommentsAreScopedToTheirContainer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("will attach each comment to the list which encloses it", func(t *testing.T) {
+		t.Parallel()
+
+		file, err := Parse(strings.NewReader("; file\n((a ; inner\n) ; outer\n)"))
+		require.NoError(t, err)
+
+		require.Equal(t, []*Comment{
+			{Pos: Pos{Line: 1, Column: 1}, Text: "; file"},
+		}, file.Comments)
+
+		outer, ok := file.Nodes[0].(List)
+		require.True(t, ok)
+		require.Equal(t, []*Comment{
+			{Pos: Pos{Line: 3, Column: 3}, Text: "; outer"},
+		}, outer.Comments)
+
+		inner, ok := outer.Elements[0].(List)
+		require.True(t, ok)
+		require.Equal(t, []*Comment{
+			{Pos: Pos{Line: 2, Column: 5}, Text: "; inner"},
+		}, inner.Comments)
+	})
+}
+
+func TestParseCommentsNeverBecomeNodes(t *testing.T) {
+	t.Parallel()
+
+	// Comment has no sexpr method, so a comment cannot be a Node at all. What
+	// is worth checking is that draining them leaves the datum tree exactly as
+	// it would be without them, rather than dropping or duplicating elements.
+	testCases := []struct {
+		name     string
+		src      string
+		stripped string
+	}{
+		{name: "leading and trailing", src: "; lead\na ; trail", stripped: "a"},
+		{name: "inside a list", src: "(; a\n b ; c\n)", stripped: "(b)"},
+		{name: "block comments", src: "#| x |# (#| y |# z)", stripped: "(z)"},
+		{name: "around a tail", src: "(a . ; t\n b)", stripped: "(a . b)"},
+		{name: "after a macro", src: "' ; m\n x", stripped: "'x"},
+		{name: "between elements", src: "(a ; one\n b ; two\n c)", stripped: "(a b c)"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			withComments, err := Parse(strings.NewReader(tc.src))
+			require.NoError(t, err)
+
+			without, err := Parse(strings.NewReader(tc.stripped))
+			require.NoError(t, err)
+
+			require.Equal(t, shapeOf(without.Nodes), shapeOf(withComments.Nodes))
+		})
+	}
+}
+
+// shapeOf renders the datum tree without positions or comments, so two parses
+// of the same data can be compared regardless of where comments sat.
+func shapeOf(nodes []Node) string {
+	var out strings.Builder
+	for i, n := range nodes {
+		if i > 0 {
+			out.WriteByte(' ')
+		}
+		writeShape(&out, n)
+	}
+	return out.String()
+}
+
+func writeShape(out *strings.Builder, n Node) {
+	switch node := n.(type) {
+	case List:
+		out.WriteByte('(')
+		for i, e := range node.Elements {
+			if i > 0 {
+				out.WriteByte(' ')
+			}
+			writeShape(out, e)
+		}
+		if node.Tail != nil {
+			out.WriteString(" . ")
+			writeShape(out, node.Tail)
+		}
+		out.WriteByte(')')
+	case Quote:
+		out.WriteString(node.Kind.String())
+		out.WriteByte('<')
+		writeShape(out, node.Datum)
+		out.WriteByte('>')
+	case Symbol:
+		out.WriteString(node.Value)
+	case String:
+		out.WriteString(strconv.Quote(node.Value))
+	case Int:
+		out.WriteString(strconv.FormatInt(node.Value, 10))
+	case Float:
+		out.WriteString(strconv.FormatFloat(node.Value, 'g', -1, 64))
+	case Bool:
+		out.WriteString(strconv.FormatBool(node.Value))
+	case Nil:
+		out.WriteString("nil")
+	}
+}
+
 func TestParseMalformedQuoteForms(t *testing.T) {
 	t.Parallel()
 
@@ -1153,19 +1364,70 @@ func TestParserPrimitives(t *testing.T) {
 		require.Equal(t, []byte("b"), next.Value)
 	})
 
-	t.Run("will skip comments", func(t *testing.T) {
+	t.Run("will return comments rather than skipping them", func(t *testing.T) {
 		t.Parallel()
 
-		p, stop := newTestParser("; one\na #| two |# b")
+		p, stop := newTestParser("; one\na")
 		defer stop()
 
 		first, _, _ := p.read()
-		require.Equal(t, TokenSymbol, first.Type)
-		require.Equal(t, []byte("a"), first.Value)
+		require.Equal(t, TokenComment, first.Type)
+		require.Equal(t, []byte("; one"), first.Value)
+	})
 
-		second, _, _ := p.read()
-		require.Equal(t, TokenSymbol, second.Type)
-		require.Equal(t, []byte("b"), second.Value)
+	t.Run("will drain leading comments", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser("; one\n#| two |# a #| three |# b")
+		defer stop()
+
+		var comments []*Comment
+		require.NoError(t, p.collectComments(&comments))
+		require.Equal(t, []*Comment{
+			{Pos: Pos{Line: 1, Column: 1}, Text: "; one"},
+			{Pos: Pos{Line: 2, Column: 1}, Text: "#| two |#"},
+		}, comments)
+
+		// Draining stops at the first token which is not a comment.
+		tok, _, _ := p.read()
+		require.Equal(t, TokenSymbol, tok.Type)
+		require.Equal(t, []byte("a"), tok.Value)
+	})
+
+	t.Run("will drain nothing when no comment is next", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`a ; later`)
+		defer stop()
+
+		var comments []*Comment
+		require.NoError(t, p.collectComments(&comments))
+		require.Empty(t, comments)
+
+		tok, _, _ := p.read()
+		require.Equal(t, TokenSymbol, tok.Type)
+	})
+
+	t.Run("will drain nothing at end of input", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(``)
+		defer stop()
+
+		var comments []*Comment
+		require.NoError(t, p.collectComments(&comments))
+		require.Empty(t, comments)
+	})
+
+	t.Run("will surface a tokenizer error while draining", func(t *testing.T) {
+		t.Parallel()
+
+		p, stop := newTestParser(`]`)
+		defer stop()
+
+		var comments []*Comment
+		err := p.collectComments(&comments)
+		require.Equal(t, UnexpectedCharacterError{Pos: Pos{Line: 1, Column: 1}, R: ']'}, err)
 	})
 
 	t.Run("will accept an expected token type", func(t *testing.T) {
