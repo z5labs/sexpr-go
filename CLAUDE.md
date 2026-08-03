@@ -265,6 +265,21 @@ Two failure modes are deliberately distinguished:
 Booleans scan the whole atom run rather than stopping after `t`, which is what
 makes `#tx` an error instead of `#t` followed by the symbol `x`.
 
+### Reader Macros
+
+`'`, `` ` ``, `,`, and `,@` all produce a single `TokenQuote` whose value is the
+macro's literal text; the parser tells them apart by that value.
+
+`,@` is the only construct needing lookahead. `tokenizeUnquote` reads one
+character past the comma and calls `t.backup` when it is not `@`, so the next
+token still sees it. Note `@` is an atom character, which is why the lookahead
+has to consume it explicitly rather than letting the atom scanner take it.
+
+The tokenizer stays permissive: a macro with nothing after it is still a
+complete token, so a trailing `'` at end of input is not an error. Deciding
+whether a datum actually follows belongs to the parser, which is the only layer
+that knows what a datum is.
+
 ### Naming Note
 
 In `avro-go/idl`, `TokenSymbol` means punctuation. Here "symbol" means the Lisp
