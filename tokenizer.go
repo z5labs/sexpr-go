@@ -34,6 +34,8 @@ type Token struct {
 	Value []byte
 }
 
+// String implements the [fmt.Stringer] interface, rendering the token as its
+// type followed by its value in parentheses, such as Symbol(add).
 func (t Token) String() string {
 	return fmt.Sprintf("%s(%s)", t.Type, t.Value)
 }
@@ -41,6 +43,8 @@ func (t Token) String() string {
 // TokenType represents the type of a token.
 type TokenType int
 
+// The token types [Tokenize] may yield. Punctuation gets its own type rather
+// than being lumped together, since [TokenSymbol] means the Lisp atom here.
 const (
 	TokenLParen  TokenType = iota // "("
 	TokenRParen                   // ")"
@@ -53,6 +57,9 @@ const (
 	TokenQuote                    // a reader macro: ', `, , or ,@
 )
 
+// String implements the [fmt.Stringer] interface. It panics on a TokenType
+// which is not one of the constants above, since that can only come from a
+// value this package never produced.
 func (tt TokenType) String() string {
 	switch tt {
 	case TokenLParen:
